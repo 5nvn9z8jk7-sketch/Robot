@@ -12,6 +12,7 @@ de brancher les backends ROS2 réels.
 ```
 ├── training/                    # Entraînement YOLO (à exécuter sur PC avec GPU)
 │   ├── generate_virtual_dataset.py   # Dataset synthétique de test
+│   ├── prepare_dataset.py            # Fusion/normalisation de datasets (publics + perso)
 │   ├── train_yolo.py                 # Entraînement réel + export TensorRT
 │   └── toys.yaml.example             # Format de dataset attendu
 ├── sim/
@@ -43,6 +44,34 @@ python3 training/train_yolo.py --dry-run
 # 4. Dataset synthétique (images + labels YOLO)
 python3 training/generate_virtual_dataset.py --n 200
 ```
+
+## Datasets publics annotés
+
+Des datasets de jouets annotés existent sur [Roboflow Universe](https://universe.roboflow.com) :
+
+- [Toy Dataset TIPS (~3000 images)](https://universe.roboflow.com/tips-wis6y/toy-dataset-bfq0d)
+- [kid-toys (~1000 images)](https://universe.roboflow.com/flektest/kid-toys/dataset/16)
+- [Soft-toy (peluches)](https://universe.roboflow.com/felipe-guimaraes/soft-toy/dataset/1)
+
+Téléchargez-les au **format YOLOv8**, puis fusionnez-les avec `prepare_dataset.py` :
+
+```bash
+# Tous les jouets vers une classe unique "toy"
+python training/prepare_dataset.py \
+    --sources ../datasets/roboflow_tips ../datasets/roboflow_kidtoys \
+    --classes toy \
+    --class-map ../datasets/roboflow_tips/data.yaml:*:toy \
+    --class-map ../datasets/roboflow_kidtoys/data.yaml:*:toy \
+    --out ../datasets/toys_merged
+
+# Puis entraîner
+python training/train_yolo.py --data ../datasets/toys_merged/data.yaml --epochs 100
+```
+
+Stratégie recommandée : entraîner d'abord sur les datasets publics (modèle
+générique), puis **fine-tuner** avec 50-100 photos de vos propres jouets —
+le modèle générique peut aussi pré-annoter vos photos dans Roboflow pour
+'accélérer l'annotation manuelle.
 
 ## Entraînement réel (sur votre PC, GPU recommandé)
 
