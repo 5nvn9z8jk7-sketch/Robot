@@ -35,3 +35,6 @@ jobs:
 
       - name: Simulation virtuelle bout-en-bout (10 jouets, seed différent)
         run: python3 sim/run_virtual_demo.py --toys 10 --seed 7 --quiet
+
+      - name: Boucle d'auto-apprentissage (le modèle s'améliore au fil des sessions)
+        run: python3 sim/learning_demo.py

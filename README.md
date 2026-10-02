@@ -109,6 +109,38 @@ Puis connecter les backends réels (chaque fichier contient le pseudo-code guide
 - `toysorter/navigation/ros2_backend.py` → Nav2 `NavigateToPose`
 - `toysorter/manipulation/ros2_backend.py` → SDK bras Hiwonder
 
+## Auto-apprentissage : le robot s'améliore de son expérience
+
+Le module `toysorter/learning/` implémente une boucle d'apprentissage continu :
+
+```
+[Robot range les jouets] → détections incertaines collectées
+        ↓
+Grasp réussi → positif confirmé    Grasp raté (cible sûre) → négatif confirmé
+        ↓
+Buffer d'expériences → réentraînement périodique → modèle déployé mis à jour
+```
+
+- **Collecte ciblée** : seules les détections *incertaines* sont apprises (les
+  cas sûrs n'apportent rien, les cas trop faibles sont du bruit)
+- **Signaux objectifs** : le succès/échec du grasp sert de label — aucune
+  annotation humaine nécessaire pour les cas courants
+- **Pseudo-labels** : une observation proche et sûre corrige une observation
+  douteuse de la même cible
+- **Garde-fous** : quota de négatifs par batch pour éviter le collapse du modèle
+
+En simulation :
+
+```bash
+python3 sim/learning_demo.py
+# → les échecs de grasp diminuent round après round
+```
+
+Sur le robot : le backend perception réelle (`ros2_backend.py`) enverra ses
+frames au même `LearningMonitor` ; le réentraînement s'effectuera sur votre PC
+GPU (fine-tuning de `best.pt`, ~5 min par cycle) puis le modèle sera recopié
+sur la Jetson.
+
 ## Architecture
 
 ```
