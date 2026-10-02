@@ -1,0 +1,37 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installation des dépendances
+        run: pip install pytest
+
+      - name: Vérification syntaxe de tous les fichiers Python
+        run: |
+          python3 - <<'EOF'
+          import ast, pathlib
+          files = list(pathlib.Path('.').rglob('*.py'))
+          for p in files:
+              ast.parse(p.read_text())
+          print(f"Syntaxe OK ({len(files)} fichiers)")
+          EOF
+
+      - name: Tests unitaires et d'intégration
+        run: python3 -m pytest ros2_ws/src/toy_sorter/tests -q
+
+      - name: Simulation virtuelle bout-en-bout (5 jouets)
+        run: python3 sim/run_virtual_demo.py --toys 5 --seed 42 --quiet
+
+      - name: Simulation virtuelle bout-en-bout (10 jouets, seed différent)
+        run: python3 sim/run_virtual_demo.py --toys 10 --seed 7 --quiet
