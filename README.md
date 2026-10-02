@@ -1,1 +1,97 @@
-# Robot
+# Robot — Toy Sorter (Hiwonder ROSOrin Pro)
+
+Projet : le robot **Hiwonder ROSOrin Pro (Jetson Orin NX Super 16GB)** ramasse des jouets
+au sol et les range dans un bac, de façon autonome.
+
+Le projet est développé **virtuellement sur PC** : toute la logique (détection, navigation,
+préhension, orchestration) est écrite et testée en simulation. Au reçu du robot, il suffit
+de brancher les backends ROS2 réels.
+
+## Structure
+
+```
+├── training/                    # Entraînement YOLO (à exécuter sur PC avec GPU)
+│   ├── generate_virtual_dataset.py   # Dataset synthétique de test
+│   ├── train_yolo.py                 # Entraînement réel + export TensorRT
+│   └── toys.yaml.example             # Format de dataset attendu
+├── sim/
+│   └── run_virtual_demo.py      # Simulation bout-en-bout sans robot
+└── ros2_ws/src/toy_sorter/      # Package ROS2 (à installer sur le robot)
+    ├── package.xml
+    ├── setup.py
+    ├── toysorter/
+    │   ├── core/                # Types, monde virtuel, state machine
+    │   ├── perception/          # Interface + backend virtuel + backend ROS2
+    │   ├── navigation/          # Interface + backend virtuel + backend Nav2
+    │   ├── manipulation/        # Interface + backend virtuel + backend bras
+    │   └── tools/               # CLI simulation
+    └── tests/                   # Tests unitaires et d'intégration
+```
+
+## Démarrage rapide (sans robot)
+
+```bash
+# 1. Tests
+python3 -m pytest ros2_ws/src/toy_sorter/tests -q
+
+# 2. Simulation complète : le robot virtuel range N jouets
+python3 sim/run_virtual_demo.py --toys 8 --seed 42
+
+# 3. Entraînement YOLO simulé (valide la chaîne, sans GPU)
+python3 training/train_yolo.py --dry-run
+
+# 4. Dataset synthétique (images + labels YOLO)
+python3 training/generate_virtual_dataset.py --n 200
+```
+
+## Entraînement réel (sur votre PC, GPU recommandé)
+
+1. Prendre **200–500 photos** de vos jouets (angles/lumières/fonds variés)
+2. Annoter sur [Roboflow](https://roboflow.com) ou Label Studio (classes : `teddy`, `cube`, `car`)
+3. Exporter au format YOLO, créer `training/toys.yaml` (voir `toys.yaml.example`)
+4. Entraîner :
+   ```bash
+   pip install ultralytics
+   python3 training/train_yolo.py --data toys.yaml --epochs 100
+   ```
+5. Exporter pour la Jetson (à faire sur le robot) :
+   ```bash
+   python3 training/train_yolo.py --export best.pt   # → TensorRT engine FP16
+   ```
+
+## Installation sur le robot (à la réception)
+
+```bash
+# Sur la Jetson (ROS2 Humble/Jazzy déjà installé par Hiwonder)
+cd ~/ros2_ws/src
+git clone <ce dépôt> Robot
+cp -r Robot/ros2_ws/src/toy_sorter .
+cd ~/ros2_ws
+rosdep install --from-paths src --ignore-src -y
+colcon build --packages-select toy_sorter
+source install/setup.bash
+
+# Simulation sur le robot (vérifie l'installation)
+ros2 run toy_sorter toy_sorter_sim --toys 5
+```
+
+Puis connecter les backends réels (chaque fichier contient le pseudo-code guide) :
+- `toysorter/perception/ros2_backend.py` → caméra RGB-D + YOLO TensorRT + TF
+- `toysorter/navigation/ros2_backend.py` → Nav2 `NavigateToPose`
+- `toysorter/manipulation/ros2_backend.py` → SDK bras Hiwonder
+
+## Architecture
+
+```
+Perception (YOLO + profondeur) → cible 3D
+        ↓
+FSM : SEARCHING → NAV_TO_TOY → GRASPING → LIFTING → NAV_TO_BIN → PLACING ↺
+        ↓
+Navigation (Nav2)      Manipulation (bras + pince)
+```
+
+- Les **interfaces** (`PerceptionBackend`, `NavigationBackend`, `ManipulationBackend`)
+  sont communes aux deux mondes.
+- Les **backends virtuels** simulent bruit de détection, dropout, échecs de grasp.
+- Les **backends ROS2** s'activent sur le robot sans changer la FSM.
+- La FSM gère les retries (max 3 par jouet) et repasse en recherche après abandon.

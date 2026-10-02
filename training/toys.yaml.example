@@ -1,0 +1,9 @@
+# Exemple de fichier dataset pour Ultralytics YOLO.
+# Copiez-le en toys.yaml et adaptez les chemins.
+path: /home/vous/datasets/toys
+train: images/train
+val: images/val
+names:
+  0: teddy
+  1: cube
+  2: car
