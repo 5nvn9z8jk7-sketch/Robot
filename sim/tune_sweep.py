@@ -86,11 +86,17 @@ def main():
             total_dist += r["distance_m"]
             total_att += r["attempts"]
         eff = total_col / total_dist if total_dist else 0
-        print(f"{lw:10.1f} {total_col:8d}/{args.balls*args.trials:<3d} {total_dist/args.trials:9.1f} {total_att:8d} {eff:15.3f}")
-        if best is None or eff > best[1]:
+        total = args.balls * args.trials
+        print(f"{lw:10.1f} {total_col:8d}/{total:<3d} {total_dist/args.trials:9.1f} {total_att:8d} {eff:15.3f}")
+        # candidat "fiable" : au moins 95% des balles collectées
+        if total_col >= 0.95 * total and (best is None or eff > best[1]):
             best = (lw, eff)
 
-    print(f"\nMeilleure largeur de ligne : {best[0]} m ({best[1]:.2f} balles/mètre parcouru)")
+    if best:
+        print(f"\nMeilleure largeur de ligne (fiable, >=95% des balles) : {best[0]} m ({best[1]:.2f} balles/m)")
+        print("Les largeurs plus grandes semblent plus efficaces mais LAISSENT des balles sur le terrain.")
+    else:
+        print("\nAucune configuration fiable : augmentez la portée de détection ou resserrez les lignes.")
     return 0
 
 
