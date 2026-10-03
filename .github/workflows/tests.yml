@@ -38,3 +38,6 @@ jobs:
 
       - name: Boucle d'auto-apprentissage (le modèle s'améliore au fil des sessions)
         run: python3 sim/learning_demo.py
+
+      - name: Mission tennis (balayage du terrain + panier embarqué)
+        run: python3 sim/tennis_demo.py --small --balls 8 --quiet
