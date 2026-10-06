@@ -17,6 +17,7 @@ def main():
     ap.add_argument("--model", required=True, help="chemin du best.pt entraîné")
     ap.add_argument("--image", required=True, help="image à tester (ex: balle_test.jpg)")
     ap.add_argument("--conf", type=float, default=0.25, help="seuil de confiance (défaut 0.25)")
+    ap.add_argument("--device", default=None, help="cpu ou 0 (GPU) ; défaut : auto")
     args = ap.parse_args()
 
     try:
@@ -32,7 +33,10 @@ def main():
         return 1
 
     model = YOLO(str(model_path))
-    results = model.predict(args.image, conf=args.conf, save=True, project="training/predictions", name="test", exist_ok=True)
+    kwargs = {}
+    if args.device:
+        kwargs["device"] = args.device
+    results = model.predict(args.image, conf=args.conf, save=True, project="training/predictions", name="test", exist_ok=True, **kwargs)
 
     result = results[0]
     names = result.names
