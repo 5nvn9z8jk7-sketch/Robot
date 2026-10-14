@@ -4,3 +4,6 @@ __pycache__/
 training/datasets/
 testing/datasets/
 runs/
+weights/
+*.pt
+*.engine
