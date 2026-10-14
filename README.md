@@ -12,6 +12,7 @@ de brancher les backends ROS2 réels.
 ```
 ├── training/                    # Entraînement YOLO (à exécuter sur PC avec GPU)
 │   ├── generate_virtual_dataset.py   # Dataset synthétique de test
+│   ├── prepare_dataset.py            # Fusion/normalisation de datasets (publics + perso)
 │   ├── train_yolo.py                 # Entraînement réel + export TensorRT
 │   └── toys.yaml.example             # Format de dataset attendu
 ├── sim/
@@ -43,6 +44,34 @@ python3 training/train_yolo.py --dry-run
 # 4. Dataset synthétique (images + labels YOLO)
 python3 training/generate_virtual_dataset.py --n 200
 ```
+
+## Datasets publics annotés
+
+Des datasets de jouets annotés existent sur [Roboflow Universe](https://universe.roboflow.com) :
+
+- [Toy Dataset TIPS (~3000 images)](https://universe.roboflow.com/tips-wis6y/toy-dataset-bfq0d)
+- [kid-toys (~1000 images)](https://universe.roboflow.com/flektest/kid-toys/dataset/16)
+- [Soft-toy (peluches)](https://universe.roboflow.com/felipe-guimaraes/soft-toy/dataset/1)
+
+Téléchargez-les au **format YOLOv8**, puis fusionnez-les avec `prepare_dataset.py` :
+
+```bash
+# Tous les jouets vers une classe unique "toy"
+python training/prepare_dataset.py \
+    --sources ../datasets/roboflow_tips ../datasets/roboflow_kidtoys \
+    --classes toy \
+    --class-map ../datasets/roboflow_tips/data.yaml:*:toy \
+    --class-map ../datasets/roboflow_kidtoys/data.yaml:*:toy \
+    --out ../datasets/toys_merged
+
+# Puis entraîner
+python training/train_yolo.py --data ../datasets/toys_merged/data.yaml --epochs 100
+```
+
+Stratégie recommandée : entraîner d'abord sur les datasets publics (modèle
+générique), puis **fine-tuner** avec 50-100 photos de vos propres jouets —
+le modèle générique peut aussi pré-annoter vos photos dans Roboflow pour
+'accélérer l'annotation manuelle.
 
 ## Entraînement réel (sur votre PC, GPU recommandé)
 
@@ -79,6 +108,38 @@ Puis connecter les backends réels (chaque fichier contient le pseudo-code guide
 - `toysorter/perception/ros2_backend.py` → caméra RGB-D + YOLO TensorRT + TF
 - `toysorter/navigation/ros2_backend.py` → Nav2 `NavigateToPose`
 - `toysorter/manipulation/ros2_backend.py` → SDK bras Hiwonder
+
+## Auto-apprentissage : le robot s'améliore de son expérience
+
+Le module `toysorter/learning/` implémente une boucle d'apprentissage continu :
+
+```
+[Robot range les jouets] → détections incertaines collectées
+        ↓
+Grasp réussi → positif confirmé    Grasp raté (cible sûre) → négatif confirmé
+        ↓
+Buffer d'expériences → réentraînement périodique → modèle déployé mis à jour
+```
+
+- **Collecte ciblée** : seules les détections *incertaines* sont apprises (les
+  cas sûrs n'apportent rien, les cas trop faibles sont du bruit)
+- **Signaux objectifs** : le succès/échec du grasp sert de label — aucune
+  annotation humaine nécessaire pour les cas courants
+- **Pseudo-labels** : une observation proche et sûre corrige une observation
+  douteuse de la même cible
+- **Garde-fous** : quota de négatifs par batch pour éviter le collapse du modèle
+
+En simulation :
+
+```bash
+python3 sim/learning_demo.py
+# → les échecs de grasp diminuent round après round
+```
+
+Sur le robot : le backend perception réelle (`ros2_backend.py`) enverra ses
+frames au même `LearningMonitor` ; le réentraînement s'effectuera sur votre PC
+GPU (fine-tuning de `best.pt`, ~5 min par cycle) puis le modèle sera recopié
+sur la Jetson.
 
 ## Architecture
 
