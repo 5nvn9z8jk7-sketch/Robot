@@ -32,7 +32,7 @@ class VirtualWorld:
     robot_pos: Vec3 = field(default_factory=Vec3)
     robot_yaw: float = 0.0
     gripper_holding: Toy = None
-    rng: random.Random = field(default_factory=random.Random)
+    rng: random.Random = None
 
     def __post_init__(self):
         if self.rng is None:

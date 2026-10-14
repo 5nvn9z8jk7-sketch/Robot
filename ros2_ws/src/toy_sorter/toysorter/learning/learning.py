@@ -146,7 +146,7 @@ class VirtualLearningMonitor(LearningMonitor):
         self.retrain_cycles += 1
         self.log(
             f"[LEARN] réentraînement #{self.retrain_cycles}: {len(batch['positives'])} positifs, "
-            f"{len(batch['negatives'])} négatifs → précision modèle ≈ {self.model_precision:.2f}"
+            f"{len(batch['negatives'])} négatifs -> précision modèle ~ {self.model_precision:.2f}"
         )
 
 
