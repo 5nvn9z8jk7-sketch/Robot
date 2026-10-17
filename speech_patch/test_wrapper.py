@@ -131,7 +131,10 @@ else:
     full = api.stream_chat(
         messages=[{"role": "user", "content": "Compte de 1 a 3 en francais."}],
         callback=chunks.append, max_tokens=256)
-    check("stream_chat() accumule", "1" in full and "3" in full, repr(full[:120]))
+    # Le modele peut repondre avec des chiffres (1, 2, 3) ou des lettres (un, deux, trois)
+    has_count = any(k in full.lower() for k in ("1", "un")) and any(
+        k in full.lower() for k in ("3", "trois"))
+    check("stream_chat() accumule", has_count, repr(full[:120]))
     check("stream_chat() callback appele", len(chunks) > 0, "%d morceaux" % len(chunks))
 
     # Modele "thinking" : verifier que num_predict eleve evite la reponse vide
@@ -215,6 +218,63 @@ check("patch supprime du package",
 
 # --- 7. CLI ---
 check("main --help retourne 0", sop.main(["--help"]) == 0)
+
+# --- 8. Detection de langue (_detect_lang) ---
+check("_detect_lang fr_FR", sop._detect_lang("vits-piper-fr_FR-siwis-medium/model.onnx") == "fr")
+check("_detect_lang fr-fr", sop._detect_lang("sherpa-onnx-streaming-zipformer-fr-2023-02-20/encoder.onnx") == "fr")
+check("_detect_lang french", sop._detect_lang("/models/french-vits/model.onnx") == "fr")
+check("_detect_lang siwis", sop._detect_lang("vits-piper-fr_FR-siwis-medium/model.onnx") == "fr")
+check("_detect_lang en ljspeech", sop._detect_lang("vits-ljs/model.onnx") == "en")
+check("_detect_lang en english", sop._detect_lang("sherpa-onnx-streaming-zipformer-en-2023-06-21/encoder.onnx") == "en")
+check("_detect_lang unknown", sop._detect_lang("some-random-model/model.onnx") == "unknown")
+
+# --- 9. Constantes de langue et prompt francais ---
+check("DEFAULT_LANGUAGE = fr", sop.DEFAULT_LANGUAGE == "fr")
+check("DEFAULT_SYSTEM_PROMPT contient 'francais'",
+      "francais" in sop.DEFAULT_SYSTEM_PROMPT.lower())
+check("DEFAULT_SYSTEM_PROMPT contient 'robot'",
+      "robot" in sop.DEFAULT_SYSTEM_PROMPT.lower())
+check("FORCE_FRENCH_PROMPT est un booleen", isinstance(sop.FORCE_FRENCH_PROMPT, bool))
+
+# --- 10. OllamaAPI : prompt systeme francais par defaut ---
+api_test = sop.OllamaAPI(url="http://127.0.0.1:1", model="test")  # URL bidon, pas de connexion
+check("OllamaAPI.system_prompt = prompt FR par defaut",
+      "francais" in api_test.system_prompt.lower())
+check("OllamaAPI.system_prompt contient 'robot'",
+      "robot" in api_test.system_prompt.lower())
+
+# Si l'appelant fournit un system prompt explicite et FORCE_FRENCH_PROMPT=False
+api_test.system_prompt = "Custom prompt"
+if not sop.FORCE_FRENCH_PROMPT:
+    check("OllamaAPI respecte system_prompt custom (si FORCE_FRENCH_PROMPT=False)",
+          api_test.system_prompt == "Custom prompt")
+
+# --- 11. OfflineRealTimeASR accepte language=fr ---
+asr_fr = sop.OfflineRealTimeASR(language="fr")
+check("OfflineRealTimeASR(language='fr')", asr_fr.language == "fr")
+asr_en = sop.OfflineRealTimeASR(language="en")
+check("OfflineRealTimeASR(language='en')", asr_en.language == "en")
+asr_default = sop.OfflineRealTimeASR()
+check("OfflineRealTimeASR() defaut = fr", asr_default.language == "fr")
+
+# --- 12. OfflineRealTimeTTS accepte language=fr ---
+tts_fr = sop.OfflineRealTimeTTS(language="fr")
+check("OfflineRealTimeTTS(language='fr')", tts_fr.language == "fr")
+tts_en = sop.OfflineRealTimeTTS(language="en")
+check("OfflineRealTimeTTS(language='en')", tts_en.language == "en")
+
+# --- 13. SHERPA_FR_MODELS contient ASR et TTS ---
+check("SHERPA_FR_MODELS['asr_streaming']", "asr_streaming" in sop.SHERPA_FR_MODELS)
+check("SHERPA_FR_MODELS['tts_vits']", "tts_vits" in sop.SHERPA_FR_MODELS)
+check("URL ASR fr contient 'fr'", "fr" in sop.SHERPA_FR_MODELS["asr_streaming"]["url"].lower())
+check("URL TTS fr contient 'fr'", "fr" in sop.SHERPA_FR_MODELS["tts_vits"]["url"].lower())
+
+# --- 14. _find_sherpa_models retourne asr_models/tts_models par langue ---
+found = sop._find_sherpa_models()
+check("_find_sherpa_models retourne 'asr_models'", "asr_models" in found)
+check("_find_sherpa_models retourne 'tts_models'", "tts_models" in found)
+check("asr_models est un dict", isinstance(found["asr_models"], dict))
+check("tts_models est un dict", isinstance(found["tts_models"], dict))
 
 print("")
 print("Resultat : %d PASS, %d FAIL, %d SKIP" % (PASS, FAIL, SKIP))

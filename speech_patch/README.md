@@ -13,7 +13,7 @@ installée — au lancement de la démo LLM offline, les nœuds plantent :
     AttributeError: module 'speech.speech' has no attribute 'OllamaAPI'
 
 Un mail a été envoyé au support Hiwonder (support@hiwonder.com) le 15/10/2026 à
-22h16 pour demander le package speech >= 3.0. Pas de réponse à ce jour (16/10).
+22h16 pour demander le package speech >= 3.0. Pas de réponse à ce jour (17/10).
 En attendant, ce dossier contient un wrapper qui émule les trois classes :
 
 - OfflineRealTimeASR : reconnaissance vocale offline via sherpa-onnx (zipformer,
@@ -21,27 +21,45 @@ En attendant, ce dossier contient un wrapper qui émule les trois classes :
 - OfflineRealTimeTTS : synthèse vocale offline via sherpa-onnx (VITS, idem)
 - OllamaAPI : client HTTP vers le serveur Ollama du PC (LLM local)
 
-## Architecture
+## NOUVEAU (18/10) : Support du français
+
+Le wrapper détecte et utilise automatiquement les modèles français :
+
+- **ASR français** : zipformer streaming fr (reconnaissance de la parole en français)
+- **TTS français** : VITS piper fr_FR siwis (voix féminine française)
+- **LLM français** : prompt système en français pour forcer les réponses en français
+
+### Architecture
 
     PC (192.168.1.20)            Robot (192.168.1.30)
     -------------------          ----------------------------------
-    Ollama :11434                sherpa-onnx (ASR + TTS, déjà là)
+    Ollama :11434                sherpa-onnx (ASR fr + TTS fr)
     qwen3.5:9b, mistral...       ce patch (speech_offline_patch.py)
                                  micro + haut-parleur
 
-    Flux : micro -> ASR (anglais) -> Ollama (LLM, réponse en français)
-           -> TTS -> haut-parleur + mouvements du robot
+    Flux : micro -> ASR (FRANCAIS) -> Ollama (LLM, réponse en FRANCAIS)
+           -> TTS (voix FR) -> haut-parleur + mouvements du robot
+
+### Commandes vocales en français
+
+    "Avance d'un mètre"
+    "Recule"
+    "Tourne à gauche"
+    "Tourne à droite"
+    "Stop"
+    "Bonjour, qui es-tu ?"
 
 ## Fichiers
 
 - speech_offline_patch.py — le wrapper (à transférer sur le robot, il s'installe tout seul)
-- install_on_robot.sh — script de confort (appelle le --install du wrapper)
-- test_wrapper.py — tests (à lancer sur le PC et/ou sur le robot)
+- install_on_robot.sh — script de confort (installe + configure FR + télécharge modèles)
+- download_french_models.sh — télécharge les modèles ASR/TTS français (standalone)
+- test_wrapper.py — tests (61 PASS, 0 FAIL, 2 SKIP)
 - test_depuis_robot.sh — test de connectivité robot → PC (à lancer SUR le robot)
 - autoriser_ollama_firewall.bat — règle pare-feu Windows (à lancer EN ADMIN sur le PC)
 - README.md — ce fichier
 
-## Déploiement sur le robot
+## Déploiement sur le robot (français)
 
 Pas de mot de passe SSH connu -> déploiement manuel via NoMachine.
 
@@ -55,31 +73,45 @@ Pas de mot de passe SSH connu -> déploiement manuel via NoMachine.
     bash install_on_robot.sh
 
    Le script fait tout :
-   - copie le wrapper dans ~/.local/lib/python3.10/site-packages/speech/
-   - sauvegarde speech.py et __init__.py (fichiers .bak)
-   - branche l'import du wrapper à la fin de speech.py
-   - vérifie dans un sous-processus que les 3 classes sont bien présentes
+   - installe le wrapper dans ~/.local/lib/python3.10/site-packages/speech/
+   - configure ~/.bashrc avec SPEECH_LANG=fr, SPEECH_FORCE_FR=1, OLLAMA_URL
+   - télécharge les modèles sherpa-onnx français (ASR + TTS, ~140 Mo)
+   - vérifie que les 3 classes sont bien présentes
 
-   Alternative en une seule commande :
-
-    python3 ~/Bureau/speech_patch/speech_offline_patch.py --install
-
-4. Vérifier le diagnostic :
-
-    python3 ~/Bureau/speech_patch/speech_offline_patch.py --selftest
-
-   Résultat attendu : les 3 classes OK, Ollama joignable avec la liste des
-   modèles, modèles sherpa-onnx ASR et TTS trouvés.
+4. Redémarrer le terminal (ou `source ~/.bashrc`) pour charger les variables.
 
 5. Relancer la démo :
 
     ros2 launch large_models_examples llm_control_move.launch.py
 
-   (avec ASR_MODE=offline comme avant)
+6. **Parler en français au robot !**
 
-6. Optionnel — valider ASR/TTS sur le robot :
+### Télécharger les modèles français seuls
 
-    python3 ~/Bureau/speech_patch/test_wrapper.py
+Si vous avez déjà installé le patch et voulez juste ajouter le français :
+
+    python3 ~/Bureau/speech_patch/speech_offline_patch.py --download-fr
+
+Ou avec le script shell :
+
+    bash ~/Bureau/speech_patch/download_french_models.sh
+
+### Vérifier le diagnostic
+
+    python3 ~/Bureau/speech_patch/speech_offline_patch.py --selftest
+
+Résultat attendu : les 3 classes OK, Ollama joignable, modèles ASR/TTS
+français trouvés (section [fr]).
+
+## Variables d'environnement
+
+| Variable | Défaut | Description |
+|----------|--------|-------------|
+| `OLLAMA_URL` | `http://192.168.1.20:11434` | URL du serveur Ollama (PC) |
+| `OLLAMA_MODEL` | `qwen3.5:9b` | Modèle LLM par défaut |
+| `SHERPA_DIR` | `~/third_party/sherpa-onnx` | Dossier des modèles sherpa-onnx |
+| `SPEECH_LANG` | `fr` | Langue par défaut (fr ou en) |
+| `SPEECH_FORCE_FR` | `1` | Forcer le prompt système français même si le firmware en fournit un autre |
 
 ## Côté PC : rendre Ollama joignable depuis le robot
 
@@ -118,21 +150,14 @@ Si le robot est trop lent, utiliser mistral:latest :
 
     python3 speech_offline_patch.py --install --ollama-model mistral:latest
 
-## Faire parler le robot en français
+## Passer en anglais (si besoin)
 
-- L'ASR (zipformer-en) comprend l'ANGLAIS : donner les commandes en anglais.
-- Le LLM répond dans la langue de son prompt système (fixé par le nœud du
-  firmware). Pour un usage "chat", le wrapper accepte un prompt en français :
+    export SPEECH_LANG=en
+    # Puis relancer la démo — le wrapper utilisera les modèles anglais
 
-    from speech import speech
-    llm = speech.OllamaAPI()
-    llm.set_system_prompt("Tu es le ROSOrin Pro. Réponds toujours en français, brièvement.")
-    reponse = llm.chat([{"role": "user", "content": "Bonjour, qui es-tu ?"}])
+Ou dans ~/.bashrc :
 
-- La voix TTS (vits-ljs) est ANGLAISE : elle lira le français avec un accent.
-  Pour une voix 100 % française, il faudra un modèle VITS français dans
-  ~/third_party/sherpa-onnx (le wrapper détecte automatiquement les modèles
-  présents dans ce dossier).
+    export SPEECH_LANG=en
 
 ## Désinstallation
 
@@ -160,6 +185,5 @@ Sur le PC (Ollama local requis) :
     cd C:/Users/bloiz/projets/Robot/speech_patch
     python3 test_wrapper.py
 
-Dernier résultat (17/10) : 35 PASS, 0 FAIL, 2 SKIP (les 2 SKIP concernent
+Dernier résultat (18/10) : 61 PASS, 0 FAIL, 2 SKIP (les 2 SKIP concernent
 sherpa-onnx, absent du PC — à valider sur le robot).
-

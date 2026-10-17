@@ -11,6 +11,11 @@ la reponse du support Hiwonder (mail envoye le 15/10/2026), ce wrapper les emule
   - OfflineRealTimeTTS  : TTS offline via sherpa-onnx (vits, deja sur le robot)
   - OllamaAPI           : client LLM local via Ollama en HTTP (serveur sur le PC)
 
+Support multilingue (francais par defaut) :
+  - ASR : detecte automatiquement les modeles zipformer fr/en dans SHERPA_DIR
+  - TTS : detecte automatiquement les modeles VITS fr/en dans SHERPA_DIR
+  - LLM : prompt systeme en francais pour forcer les reponses en francais
+
 Deploiement sur le robot (une seule commande fait tout) :
 
     python3 speech_offline_patch.py --install
@@ -19,12 +24,14 @@ Autres commandes :
 
     python3 speech_offline_patch.py --uninstall     restaure speech.py
     python3 speech_offline_patch.py --selftest      diagnostic rapide
+    python3 speech_offline_patch.py --download-fr   telecharge modeles francais
 
 Variables d environnement (optionnelles) :
 
     OLLAMA_URL    URL du serveur Ollama (defaut http://192.168.1.20:11434)
     OLLAMA_MODEL  modele par defaut (defaut qwen3.5:9b)
     SHERPA_DIR    dossier des modeles sherpa-onnx (defaut ~/third_party/sherpa-onnx)
+    SPEECH_LANG   langue par defaut : fr ou en (defaut fr)
 """
 
 import os
@@ -52,11 +59,73 @@ DEFAULT_OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3.5:9b")
 # interne et la reponse (content) revient vide.
 DEFAULT_MAX_TOKENS = 4096
 
+# Langue par defaut pour ASR/TTS/LLM (fr = francais, en = anglais)
+DEFAULT_LANGUAGE = os.environ.get("SPEECH_LANG", "fr")
+
+# Si SPEECH_FORCE_FR=1, le prompt systeme francais remplace TOUJOURS celui
+# fourni par l'appelant (utile car le firmware Hiwonder fixe un prompt chinois).
+FORCE_FRENCH_PROMPT = os.environ.get("SPEECH_FORCE_FR", "1") == "1"
+
+# Prompt systeme par defaut pour forcer le LLM a repondre en francais.
+# Le noeud agent_process du firmware Hiwonder fixe son propre prompt (chinois),
+# mais si le wrapper controle le system prompt, on force le francais.
+DEFAULT_SYSTEM_PROMPT = (
+    "Tu es un assistant vocal pour un robot. "
+    "Reponds toujours en francais, de maniere concise et naturelle. "
+    "Tu peux donner des ordres de mouvement au robot : "
+    "avancer, reculer, tourner a gauche, tourner a droite, stop. "
+    "Reponds en une ou deux phrases maximum."
+)
+
+# URLs des modeles sherpa-onnx francais a telecharger (sur le robot)
+# Source : https://github.com/k2-fsa/sherpa-onnx/releases
+SHERPA_FR_MODELS = {
+    "asr_streaming": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
+               "sherpa-onnx-streaming-zipformer-fr-2023-02-20.tar.bz2",
+        "dir": "sherpa-onnx-streaming-zipformer-fr-2023-02-20",
+        "size_mb": 80,
+    },
+    "tts_vits": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/"
+               "vits-piper-fr_FR-siwis-medium.tar.bz2",
+        "dir": "vits-piper-fr_FR-siwis-medium",
+        "size_mb": 60,
+    },
+}
+
+
+def _detect_lang(path_str):
+    """Detecte la langue d'un modele a partir de son chemin/nom.
+    Retourne 'fr', 'en' ou 'unknown'."""
+    s = path_str.lower()
+    # Francais : fr, french, fr_fr, fr-fr, siwis (voix fr), piper-fr
+    if any(k in s for k in ("-fr", "_fr", "fr_", "french", "fr-fr", "fr_fr",
+                            "siwis", "piper-fr", "fr_fr", "frfr")):
+        # Exclure les faux positifs (ex: "fromage")
+        if "fr" in s:
+            return "fr"
+    # Anglais : en, english, ljspeech, libritts, en-us, en-us, ljs
+    if any(k in s for k in ("-en", "_en", "en_", "english", "en-us", "en_us",
+                            "ljspeech", "libritts", "enus", "vits-ljs", "-ljs")):
+        return "en"
+    return "unknown"
+
 
 def _find_sherpa_models(sherpa_dir=None):
-    """Cherche les modeles ASR (zipformer/paraformer) et TTS (vits) sherpa-onnx."""
+    """Cherche les modeles ASR (zipformer/paraformer) et TTS (vits) sherpa-onnx.
+
+    Retourne un dict avec les modeles classes par langue :
+        asr_models  : {lang: {"model": ..., "tokens": ..., "encoder": ..., ...}}
+        tts_models  : {lang: {"model": ..., "tokens": ..., "voices": ..., ...}}
+        asr_model   : modele ASR par defaut (compat ancienne API)
+        tts_model   : modele TTS par defaut (compat ancienne API)
+        ...
+    """
     base = Path(os.path.expanduser(sherpa_dir or DEFAULT_SHERPA_DIR))
     result = {
+        "asr_models": {},   # {lang: {...}}
+        "tts_models": {},   # {lang: {...}}
         "asr_model": None, "asr_tokens": None,
         "asr_encoder": None, "asr_decoder": None, "asr_joiner": None,
         "tts_model": None, "tts_tokens": None, "tts_voices": None,
@@ -74,7 +143,13 @@ def _find_sherpa_models(sherpa_dir=None):
         full = str(item).lower()
         name = item.name.lower()
         if "vits" in name or "tts" in name or "vits" in full:
+            lang = _detect_lang(str(item))
+            if lang not in result["tts_models"]:
+                result["tts_models"][lang] = {"model": str(item)}
             if result["tts_model"] is None:
+                result["tts_model"] = str(item)
+            # Preferer le francais pour le modele par defaut
+            if lang == "fr":
                 result["tts_model"] = str(item)
 
     # --- ASR : zipformer/paraformer/transducer dans le chemin complet ---
@@ -83,51 +158,108 @@ def _find_sherpa_models(sherpa_dir=None):
         name = item.name.lower()
         # Cherche dans le chemin complet (dossier parent peut contenir "zipformer")
         if any(k in full for k in ("zipformer", "paraformer", "transducer", "asr")):
+            lang = _detect_lang(str(item))
+            if lang not in result["asr_models"]:
+                result["asr_models"][lang] = {}
+            entry = result["asr_models"][lang]
             # Modele unique (fichier .onnx avec zipformer dans le nom)
             if "zipformer" in name or "paraformer" in name:
+                if "model" not in entry:
+                    entry["model"] = str(item)
                 if result["asr_model"] is None:
                     result["asr_model"] = str(item)
+                if lang == "fr":
+                    result["asr_model"] = str(item)
             # Modele transducer separe : encoder/decoder/joiner
-            elif "encoder" in name and result["asr_encoder"] is None:
-                result["asr_encoder"] = str(item)
-            elif "decoder" in name and result["asr_decoder"] is None:
-                result["asr_decoder"] = str(item)
-            elif "joiner" in name and result["asr_joiner"] is None:
-                result["asr_joiner"] = str(item)
+            elif "encoder" in name and "encoder" not in entry:
+                entry["encoder"] = str(item)
+                if result["asr_encoder"] is None:
+                    result["asr_encoder"] = str(item)
+                if lang == "fr":
+                    result["asr_encoder"] = str(item)
+            elif "decoder" in name and "decoder" not in entry:
+                entry["decoder"] = str(item)
+                if result["asr_decoder"] is None:
+                    result["asr_decoder"] = str(item)
+                if lang == "fr":
+                    result["asr_decoder"] = str(item)
+            elif "joiner" in name and "joiner" not in entry:
+                entry["joiner"] = str(item)
+                if result["asr_joiner"] is None:
+                    result["asr_joiner"] = str(item)
+                if lang == "fr":
+                    result["asr_joiner"] = str(item)
 
-    # Si on a encoder+decoder+joiner, utiliser le dossier comme asr_model
-    if result["asr_encoder"] and result["asr_decoder"] and result["asr_joiner"]:
-        result["asr_model"] = result["asr_encoder"]  # sera gere par _init_recognizer
+    # Si on a encoder+decoder+joiner, completer asr_model par langue
+    for lang, entry in result["asr_models"].items():
+        if entry.get("encoder") and entry.get("decoder") and entry.get("joiner"):
+            entry["model"] = entry["encoder"]  # sera gere par _init_recognizer
 
     # --- Tokens ---
     for item in base.rglob("tokens.txt"):
         parent = item.parent
+        parent_str = str(parent).lower()
+        lang = _detect_lang(parent_str)
         # TTS tokens : meme dossier que le modele TTS
         if result["tts_model"] and parent == Path(result["tts_model"]).parent:
             if result["tts_tokens"] is None:
                 result["tts_tokens"] = str(item)
+            # Aussi dans le dict par langue
+            for tl, tentry in result["tts_models"].items():
+                if tentry.get("model") and parent == Path(tentry["model"]).parent:
+                    tentry["tokens"] = str(item)
         # ASR tokens : meme dossier que encoder ou modele ASR unique
         elif result["asr_encoder"] and parent == Path(result["asr_encoder"]).parent:
             if result["asr_tokens"] is None:
                 result["asr_tokens"] = str(item)
+            for al, aentry in result["asr_models"].items():
+                if aentry.get("encoder") and parent == Path(aentry["encoder"]).parent:
+                    aentry["tokens"] = str(item)
+                elif aentry.get("model") and parent == Path(aentry["model"]).parent:
+                    aentry["tokens"] = str(item)
         elif result["asr_model"] and parent == Path(result["asr_model"]).parent:
             if result["asr_tokens"] is None:
                 result["asr_tokens"] = str(item)
+            for al, aentry in result["asr_models"].items():
+                if aentry.get("model") and parent == Path(aentry["model"]).parent:
+                    aentry["tokens"] = str(item)
         elif result["asr_tokens"] is None:
             result["asr_tokens"] = str(item)
+            # Essaie de l'attribuer par langue
+            for al, aentry in result["asr_models"].items():
+                if "tokens" not in aentry and al == lang:
+                    aentry["tokens"] = str(item)
 
-    # --- TTS voices/lexicon/dict ---
+    # --- TTS voices/lexicon/dict par langue ---
     for item in base.rglob("*"):
         n = item.name.lower()
+        item_lang = _detect_lang(str(item))
         if item.is_file() and ("voices" in n or n.endswith(".bin")):
             if result["tts_voices"] is None:
                 result["tts_voices"] = str(item)
+            for tl, tentry in result["tts_models"].items():
+                if "voices" not in tentry and (tl == item_lang or tl == "unknown"):
+                    tentry["voices"] = str(item)
         elif item.is_file() and "lexicon" in n:
             if result["tts_lexicon"] is None:
                 result["tts_lexicon"] = str(item)
+            for tl, tentry in result["tts_models"].items():
+                if "lexicon" not in tentry and (tl == item_lang or tl == "unknown"):
+                    tentry["lexicon"] = str(item)
         elif item.is_dir() and "espeak" in n:
             if result["tts_dict_dir"] is None:
                 result["tts_dict_dir"] = str(item)
+            for tl, tentry in result["tts_models"].items():
+                if "dict_dir" not in tentry:
+                    tentry["dict_dir"] = str(item)
+
+    # Completer les tokens manquants par langue avec les tokens generaux
+    for aentry in result["asr_models"].values():
+        if "tokens" not in aentry and result["asr_tokens"]:
+            aentry["tokens"] = result["asr_tokens"]
+    for tentry in result["tts_models"].values():
+        if "tokens" not in tentry and result["tts_tokens"]:
+            tentry["tokens"] = result["tts_tokens"]
 
     return result
 
@@ -141,12 +273,15 @@ class OfflineRealTimeASR:
 
     API : start(), stop(), listen(timeout), get_result(), result_text,
     is_listening, set_callback(cb), transcribe_file(path)
+
+    Selection du modele par langue : si language='fr' (defaut), cherche un
+    modele zipformer francais dans SHERPA_DIR. Sinon retombe sur l'anglais.
     """
 
-    def __init__(self, model_dir=None, sherpa_dir=None, language="en",
+    def __init__(self, model_dir=None, sherpa_dir=None, language=None,
                  sample_rate=16000, **kwargs):
         self.sample_rate = sample_rate
-        self.language = language
+        self.language = language or DEFAULT_LANGUAGE
         self._listening = False
         self._stop_flag = False
         self._audio_queue = queue.Queue()
@@ -156,15 +291,46 @@ class OfflineRealTimeASR:
         self._lock = threading.Lock()
 
         self.models = _find_sherpa_models(sherpa_dir)
-        asr_model = model_dir or self.models.get("asr_model")
-        asr_tokens = self.models.get("asr_tokens")
-        if asr_model and asr_tokens:
-            self._init_recognizer(asr_model, asr_tokens)
-        else:
-            print("[OfflineRealTimeASR] Modeles ASR non trouves dans %s"
-                  % (sherpa_dir or DEFAULT_SHERPA_DIR))
 
-    def _init_recognizer(self, model_path, tokens_path):
+        # Selection du modele ASR selon la langue demandee
+        asr_models = self.models.get("asr_models", {})
+        entry = None
+        if model_dir:
+            # Modele explicite fourni par l'appelant
+            asr_model = model_dir
+            asr_tokens = self.models.get("asr_tokens")
+            self._init_recognizer(asr_model, asr_tokens)
+            return
+        # Cherche le modele pour la langue demandee, sinon fallback
+        for lang in (self.language, "fr", "en", "unknown"):
+            if lang in asr_models and asr_models[lang].get("model"):
+                entry = asr_models[lang]
+                break
+        if entry is None:
+            # Fallback sur l'ancienne cle
+            asr_model = self.models.get("asr_model")
+            asr_tokens = self.models.get("asr_tokens")
+            if asr_model and asr_tokens:
+                self._init_recognizer(asr_model, asr_tokens)
+            else:
+                print("[OfflineRealTimeASR] Modeles ASR non trouves dans %s"
+                      % (sherpa_dir or DEFAULT_SHERPA_DIR))
+            return
+
+        asr_model = entry.get("model")
+        asr_tokens = entry.get("tokens") or self.models.get("asr_tokens")
+        enc = entry.get("encoder")
+        dec = entry.get("decoder")
+        joi = entry.get("joiner")
+        if asr_model and asr_tokens:
+            self._init_recognizer(asr_model, asr_tokens,
+                                  encoder=enc, decoder=dec, joiner=joi)
+        else:
+            print("[OfflineRealTimeASR] Modele ASR incomplet pour langue=%s"
+                  % self.language)
+
+    def _init_recognizer(self, model_path, tokens_path,
+                         encoder=None, decoder=None, joiner=None):
         try:
             import sherpa_onnx
         except ImportError:
@@ -184,36 +350,43 @@ class OfflineRealTimeASR:
                         model=model_path, tokens=tokens_path)
             else:
                 md = os.path.dirname(model_path)
-                # Cherche encoder/decoder/joiner dans le dossier du modele
-                enc = dec = joi = None
-                # Essayer d'abord les noms generiques, puis les noms avec epoch
-                for key, patterns in (("encoder", ("encoder.onnx", "encoder.int8.onnx", "encoder-epoch-*.onnx", "encoder-epoch-*.int8.onnx")),
-                                      ("decoder", ("decoder.onnx", "decoder.int8.onnx", "decoder-epoch-*.onnx", "decoder-epoch-*.int8.onnx")),
-                                      ("joiner", ("joiner.onnx", "joiner.int8.onnx", "joiner-epoch-*.onnx", "joiner-epoch-*.int8.onnx"))):
-                    for pat in patterns:
-                        if "*" in pat:
-                            import glob
-                            matches = sorted(glob.glob(os.path.join(md, pat)))
-                            # Preferer la version non-int8
-                            for m in matches:
-                                if ".int8." not in m:
-                                    if key == "encoder": enc = m
-                                    elif key == "decoder": dec = m
-                                    else: joi = m
+                # Utiliser encoder/decoder/joiner fournis, sinon chercher dans le dossier
+                enc = encoder
+                dec = decoder
+                joi = joiner
+                if not (enc and dec and joi):
+                    # Cherche encoder/decoder/joiner dans le dossier du modele
+                    # Essayer d'abord les noms generiques, puis les noms avec epoch
+                    for key, patterns in (("encoder", ("encoder.onnx", "encoder.int8.onnx", "encoder-epoch-*.onnx", "encoder-epoch-*.int8.onnx")),
+                                          ("decoder", ("decoder.onnx", "decoder.int8.onnx", "decoder-epoch-*.onnx", "decoder-epoch-*.int8.onnx")),
+                                          ("joiner", ("joiner.onnx", "joiner.int8.onnx", "joiner-epoch-*.onnx", "joiner-epoch-*.int8.onnx"))):
+                        if key == "encoder" and enc: continue
+                        if key == "decoder" and dec: continue
+                        if key == "joiner" and joi: continue
+                        for pat in patterns:
+                            if "*" in pat:
+                                import glob
+                                matches = sorted(glob.glob(os.path.join(md, pat)))
+                                # Preferer la version non-int8
+                                for m in matches:
+                                    if ".int8." not in m:
+                                        if key == "encoder": enc = m
+                                        elif key == "decoder": dec = m
+                                        else: joi = m
+                                        break
+                                if (key == "encoder" and enc) or (key == "decoder" and dec) or (key == "joiner" and joi):
+                                    continue
+                                if matches:
+                                    if key == "encoder": enc = matches[0]
+                                    elif key == "decoder": dec = matches[0]
+                                    else: joi = matches[0]
+                            else:
+                                p = os.path.join(md, pat)
+                                if os.path.exists(p):
+                                    if key == "encoder": enc = p
+                                    elif key == "decoder": dec = p
+                                    else: joi = p
                                     break
-                            if (key == "encoder" and enc) or (key == "decoder" and dec) or (key == "joiner" and joi):
-                                continue
-                            if matches:
-                                if key == "encoder": enc = matches[0]
-                                elif key == "decoder": dec = matches[0]
-                                else: joi = matches[0]
-                        else:
-                            p = os.path.join(md, pat)
-                            if os.path.exists(p):
-                                if key == "encoder": enc = p
-                                elif key == "decoder": dec = p
-                                else: joi = p
-                                break
                 if enc and dec and joi:
                     if is_streaming:
                         self._recognizer = sherpa_onnx.OnlineRecognizer.from_transducer(
@@ -235,7 +408,8 @@ class OfflineRealTimeASR:
                                 encoder=model_path, decoder=model_path,
                                 joiner=model_path, tokens=tokens_path)
             mode = "streaming (OnlineRecognizer)" if is_streaming else "offline (OfflineRecognizer)"
-            print("[OfflineRealTimeASR] Recognizer initialise [%s]: %s" % (mode, model_path))
+            print("[OfflineRealTimeASR] Recognizer initialise [%s, lang=%s]: %s"
+                  % (mode, self.language, model_path))
         except Exception as e:
             print("[OfflineRealTimeASR] Erreur init: %s" % e)
 
@@ -401,10 +575,14 @@ class OfflineRealTimeTTS:
 
     API : say(text, blocking), save_to_file(text, path), play_file(path),
     set_voice(id), set_speed(s), stop(), is_playing
+
+    Selection du modele par langue : si language='fr' (defaut), cherche un
+    modele VITS francais (ex: vits-piper-fr_FR-siwis). Sinon retombe sur
+    l'anglais (ex: vits-ljs).
     """
 
     def __init__(self, model_dir=None, sherpa_dir=None, voice=0, speed=1.0,
-                 speaker_id=None, sample_rate=None, **kwargs):
+                 speaker_id=None, sample_rate=None, language=None, **kwargs):
         self.speed = float(speed) if speed else 1.0
         if speaker_id is not None:
             self.speaker_id = int(speaker_id)
@@ -414,17 +592,36 @@ class OfflineRealTimeTTS:
             except (TypeError, ValueError):
                 self.speaker_id = 0
         self.sample_rate = sample_rate  # None = sample_rate du modele
+        self.language = language or DEFAULT_LANGUAGE
         self._tts = None
         self._playing = False
         self._lock = threading.Lock()
 
         self.models = _find_sherpa_models(sherpa_dir)
-        tm = model_dir or self.models.get("tts_model")
+
+        # Selection du modele TTS selon la langue demandee
+        tts_models = self.models.get("tts_models", {})
+        entry = None
+        if model_dir:
+            tm = model_dir
+        else:
+            for lang in (self.language, "fr", "en", "unknown"):
+                if lang in tts_models and tts_models[lang].get("model"):
+                    entry = tts_models[lang]
+                    break
+            if entry:
+                tm = entry.get("model")
+            else:
+                tm = self.models.get("tts_model")
+
         if tm:
+            # Mettre a jour les tokens/voices/lexicon depuis l'entry par langue
+            if entry:
+                self._tts_entry = entry
             self._init_tts(tm)
         else:
-            print("[OfflineRealTimeTTS] Modele VITS non trouve dans %s"
-                  % (sherpa_dir or DEFAULT_SHERPA_DIR))
+            print("[OfflineRealTimeTTS] Modele VITS non trouve dans %s (lang=%s)"
+                  % (sherpa_dir or DEFAULT_SHERPA_DIR, self.language))
 
     def _init_tts(self, model_path):
         try:
@@ -434,16 +631,18 @@ class OfflineRealTimeTTS:
             return
         try:
             md = os.path.dirname(model_path)
+            # Priorite aux fichiers du dossier du modele, puis ceux de l'entry par langue
+            entry = getattr(self, "_tts_entry", {})
             tokens = os.path.join(md, "tokens.txt")
             if not os.path.exists(tokens):
-                tokens = self.models.get("tts_tokens") or self.models.get("asr_tokens") or ""
+                tokens = entry.get("tokens") or self.models.get("tts_tokens") or self.models.get("asr_tokens") or ""
             lexicon = os.path.join(md, "lexicon.txt")
             if not os.path.exists(lexicon):
-                lexicon = self.models.get("tts_lexicon") or ""
+                lexicon = entry.get("lexicon") or self.models.get("tts_lexicon") or ""
             data_dir = os.path.join(md, "espeak-ng-data")
             if not os.path.isdir(data_dir):
-                data_dir = self.models.get("tts_dict_dir") or ""
-            voices = self.models.get("tts_voices") or ""
+                data_dir = entry.get("dict_dir") or self.models.get("tts_dict_dir") or ""
+            voices = entry.get("voices") or self.models.get("tts_voices") or ""
 
             self._tts = None
             last_err = "aucune tentative"
@@ -481,7 +680,8 @@ class OfflineRealTimeTTS:
                     try:
                         tts_config = sherpa_onnx.OfflineTtsConfig(model=model_config)
                         self._tts = sherpa_onnx.OfflineTts(tts_config)
-                        print("[OfflineRealTimeTTS] TTS initialise (config): %s" % model_path)
+                        print("[OfflineRealTimeTTS] TTS initialise (config, lang=%s): %s"
+                              % (self.language, model_path))
                         return
                     except Exception as e:
                         last_err = "OfflineTts(config): %s" % e
@@ -501,14 +701,16 @@ class OfflineRealTimeTTS:
                     kw = {k: v for k, v in kw.items() if v}
                     try:
                         self._tts = sherpa_onnx.OfflineTts(**kw)
-                        print("[OfflineRealTimeTTS] TTS initialise (kwargs): %s" % model_path)
+                        print("[OfflineRealTimeTTS] TTS initialise (kwargs, lang=%s): %s"
+                              % (self.language, model_path))
                         return
                     except Exception as e:
                         last_err = "kwargs %s: %s" % (list(kw.keys()), e)
                         continue
 
             if self._tts is not None:
-                print("[OfflineRealTimeTTS] TTS initialise: %s" % model_path)
+                print("[OfflineRealTimeTTS] TTS initialise (lang=%s): %s"
+                      % (self.language, model_path))
             else:
                 print("[OfflineRealTimeTTS] Impossible d initialiser le TTS")
                 print("[OfflineRealTimeTTS] Derniere erreur: %s" % last_err)
@@ -642,7 +844,12 @@ class OllamaAPI:
             url = env_url
         self.url = (url or DEFAULT_OLLAMA_URL).rstrip("/")
         self.model = model or kwargs.get("model_name") or DEFAULT_OLLAMA_MODEL
-        self.system_prompt = kwargs.get("system_prompt", "") or ""
+        # Prompt systeme : si l'appelant ne fournit rien, utiliser le prompt
+        # francais par defaut pour forcer les reponses en francais.
+        sp = kwargs.get("system_prompt")
+        if sp is None or sp == "":
+            sp = DEFAULT_SYSTEM_PROMPT
+        self.system_prompt = sp
         self.timeout = kwargs.get("timeout", 180)
         self._last_response = ""
         self._history = []
@@ -684,7 +891,10 @@ class OllamaAPI:
     def chat(self, messages=None, system=None, temperature=0.1,
              max_tokens=DEFAULT_MAX_TOKENS, model=None):
         """Conversation complete. Retourne le texte de la reponse."""
-        sp = system if system is not None else self.system_prompt
+        if FORCE_FRENCH_PROMPT:
+            sp = DEFAULT_SYSTEM_PROMPT
+        else:
+            sp = system if system is not None else self.system_prompt
         fm = []
         if sp:
             fm.append({"role": "system", "content": sp})
@@ -732,7 +942,10 @@ class OllamaAPI:
                     temperature=0.1, max_tokens=DEFAULT_MAX_TOKENS, model=None):
         """Chat en streaming : callback(delta) appele pour chaque morceau."""
         import urllib.request
-        sp = system if system is not None else self.system_prompt
+        if FORCE_FRENCH_PROMPT:
+            sp = DEFAULT_SYSTEM_PROMPT
+        else:
+            sp = system if system is not None else self.system_prompt
         fm = []
         if sp:
             fm.append({"role": "system", "content": sp})
@@ -1080,20 +1293,119 @@ def selftest(ollama_url=None):
 
     found = _find_sherpa_models()
     print("Sherpa-onnx : %s" % found["base_dir"])
-    print("    ASR : %s" % (found["asr_model"] or "NON TROUVE"))
-    if found.get("asr_encoder"):
-        print("    ASR encoder : %s" % found["asr_encoder"])
-        print("    ASR decoder : %s" % (found.get("asr_decoder") or "NON TROUVE"))
-        print("    ASR joiner  : %s" % (found.get("asr_joiner") or "NON TROUVE"))
-    print("    ASR tokens  : %s" % (found.get("asr_tokens") or "NON TROUVE"))
-    print("    TTS : %s" % (found["tts_model"] or "NON TROUVE"))
-    if not found["asr_model"] and not found.get("asr_encoder"):
+    print("Langue par defaut : %s" % DEFAULT_LANGUAGE)
+
+    # Afficher les modeles par langue
+    asr_models = found.get("asr_models", {})
+    tts_models = found.get("tts_models", {})
+    for lang in ("fr", "en", "unknown"):
+        if lang in asr_models:
+            a = asr_models[lang]
+            print("    ASR [%s] : %s" % (lang, a.get("model") or "NON TROUVE"))
+            if a.get("encoder"):
+                print("        encoder : %s" % a["encoder"])
+                print("        decoder : %s" % (a.get("decoder") or "NON TROUVE"))
+                print("        joiner  : %s" % (a.get("joiner") or "NON TROUVE"))
+            print("        tokens  : %s" % (a.get("tokens") or "NON TROUVE"))
+        if lang in tts_models:
+            t = tts_models[lang]
+            print("    TTS [%s] : %s" % (lang, t.get("model") or "NON TROUVE"))
+
+    # Compat ancienne API
+    print("    ASR (defaut) : %s" % (found["asr_model"] or "NON TROUVE"))
+    print("    TTS (defaut) : %s" % (found["tts_model"] or "NON TROUVE"))
+
+    has_asr = found["asr_model"] or found.get("asr_encoder") or any(
+        a.get("model") for a in asr_models.values())
+    has_tts = found["tts_model"] or any(
+        t.get("model") for t in tts_models.values())
+    if not has_asr:
         ok = False
-    if not found["tts_model"]:
+    if not has_tts:
         ok = False
+
+    # Verifier si les modeles francais sont presents
+    has_fr_asr = "fr" in asr_models and asr_models["fr"].get("model")
+    has_fr_tts = "fr" in tts_models and tts_models["fr"].get("model")
+    if DEFAULT_LANGUAGE == "fr":
+        if not has_fr_asr:
+            print("ATTENTION : pas de modele ASR francais trouve. "
+                  "Lancer --download-fr pour les telecharger.")
+        if not has_fr_tts:
+            print("ATTENTION : pas de modele TTS francais trouve. "
+                  "Lancer --download-fr pour les telecharger.")
 
     print("Selftest : %s" % ("OK" if ok else "PROBLEMES DETECTES"))
     return ok
+
+
+def download_french_models(sherpa_dir=None, force=False):
+    """Telecharge les modeles sherpa-onnx francais (ASR + TTS) sur le robot.
+
+    A executer SUR LE ROBOT : python3 speech_offline_patch.py --download-fr
+    Telecharge dans ~/third_party/sherpa-onnx/ :
+      - ASR streaming zipformer francais (~80 Mo)
+      - TTS VITS piper fr_FR siwis (~60 Mo)
+    """
+    import subprocess
+    import tarfile
+    import tempfile
+
+    base = os.path.expanduser(sherpa_dir or DEFAULT_SHERPA_DIR)
+    os.makedirs(base, exist_ok=True)
+    print("Dossier cible : %s" % base)
+
+    for key, info in SHERPA_FR_MODELS.items():
+        target_dir = os.path.join(base, info["dir"])
+        marker = os.path.join(target_dir, ".complete")
+        if os.path.exists(marker) and not force:
+            print("[%s] Deja telecharge (%s)" % (key, info["dir"]))
+            continue
+
+        url = info["url"]
+        print("[%s] Telechargement : %s (~%d Mo)" % (key, url, info["size_mb"]))
+        print("      -> %s" % target_dir)
+
+        fd, tmp_path = tempfile.mkstemp(suffix=".tar.bz2")
+        os.close(fd)
+        try:
+            # Telechargement avec barre de progression simple
+            import urllib.request
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                total = int(resp.headers.get("Content-Length", 0))
+                downloaded = 0
+                with open(tmp_path, "wb") as f:
+                    while True:
+                        chunk = resp.read(1024 * 256)  # 256 Ko
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total:
+                            pct = downloaded * 100 // total
+                            print("\r      Progression : %d%%" % pct, end="", flush=True)
+                print()
+
+            # Extraction
+            print("[%s] Extraction..." % key)
+            os.makedirs(base, exist_ok=True)
+            with tarfile.open(tmp_path, "r:bz2") as tf:
+                tf.extractall(base)
+            # Creer le marqueur
+            os.makedirs(target_dir, exist_ok=True)
+            with open(marker, "w") as f:
+                f.write("ok\n")
+            print("[%s] OK : %s" % (key, target_dir))
+        except Exception as e:
+            print("[%s] ERREUR : %s" % (key, e))
+            return False
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    print("Telechargement termine. Modeles francais dans %s" % base)
+    return True
 
 
 def main(argv=None):
@@ -1104,6 +1416,7 @@ def main(argv=None):
         print("  --install [--ollama-url URL] [--ollama-model MODELE]")
         print("  --uninstall")
         print("  --selftest [--ollama-url URL]")
+        print("  --download-fr [--force]   telecharge modeles ASR/TTS francais")
         return 0
 
     def opt(name):
@@ -1121,6 +1434,8 @@ def main(argv=None):
         return 0 if uninstall() else 1
     if cmd == "--selftest":
         return 0 if selftest(ollama_url=opt("--ollama-url")) else 1
+    if cmd == "--download-fr":
+        return 0 if download_french_models(force="--force" in argv) else 1
     print("Commande inconnue : %s (voir --help)" % cmd)
     return 1
 
