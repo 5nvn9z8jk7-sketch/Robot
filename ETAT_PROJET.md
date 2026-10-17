@@ -1,6 +1,92 @@
 # ETAT DU PROJET — ROSOrin Pro (LLM local + speech offline FRANCAIS)
 
-Dernière mise à jour : 18/10/2026 — **SUPPORT FRANÇAIS AJOUTÉ**, robot sans batterie
+Dernière mise à jour : 18/10/2026 01:15 — **EN COURS : test vocal FR sur robot**
+
+---
+
+## 🔄 SESSION EN COURS (18/10 01:00-01:15)
+
+### Ce qui a été fait aujourd'hui :
+
+| Étape | Statut |
+|-------|--------|
+| Support FR ajouté au wrapper (ASR/TTS/LLM) | ✅ Commit `969d8ee` pushé |
+| Tests PC : 61 PASS, 0 FAIL | ✅ |
+| Zip déployé sur robot | ✅ `speech_patch_deploy.zip` (24 Ko) |
+| Installation sur robot (`install_on_robot.sh`) | ✅ Patch installé, bashrc configuré |
+| TTS FR téléchargé (`vits-piper-fr_FR-siwis-medium`) | ✅ 60 Mo |
+| ASR FR téléchargé (`zipformer-fr-2023-04-14`) | ✅ 380 Mo |
+| Selftest robot | ✅ ASR[fr] + TTS[fr] détectés |
+| Lancement démo `llm_control_move.launch.py` | ✅ Tous les nœuds démarrent |
+| TTS FR initialisé | ✅ `TTS initialise (config, lang=fr)` |
+| **PROBLÈME : scan sherpa-onnx trop lent** | ❌ **BLOQUANT** |
+
+### 🐛 Problème actuel (BLOQUANT)
+
+Le nœud `vocal_detect` bloque au démarrage car `_find_sherpa_models()` fait
+`base.rglob("*")` sur `~/third_party/sherpa-onnx/` (~1 Go de modèles).
+Le scan prend > 2 minutes et le nœud est interrompu avant de finir.
+
+**Fichier concerné** (sur le robot) :
+`~/.local/lib/python3.10/site-packages/speech/speech_offline_patch.py`
+
+**Ligne à patcher** (chercher `rglob("*")`) :
+```python
+# AVANT (lent) :
+for item in base.rglob("*"):
+
+# APRÈS (rapide) :
+for item in list(base.rglob("*.bin")) + list(base.rglob("lexicon*")) + list(base.rglob("espeak-ng-data")) + list(base.rglob("voices*")):
+```
+
+**Commande sed rapide** (à exécuter sur le robot) :
+```bash
+cd ~/.local/lib/python3.10/site-packages/speech
+cp speech_offline_patch.py speech_offline_patch.py.bak2
+sed -i 's|for item in base.rglob("\*"):|for item in list(base.rglob("*.bin")) + list(base.rglob("lexicon*")) + list(base.rglob("espeak-ng-data")) + list(base.rglob("voices*")):|g' speech_offline_patch.py
+```
+
+### ⚠️ Autres problèmes connus (non bloquants)
+
+| Problème | Cause | Impact |
+|----------|-------|--------|
+| `agent_process` → `localhost:11434` | `OLLAMA_URL` pas chargée ( Mauvais `source /.bashrc` au lieu de `~/.bashrc` ) | Utilise Ollama local (petits modèles) au lieu du PC |
+| `asr_server` utilise modèle EN | Fichier de launch code en dur le chemin EN | ASR en anglais au lieu de français |
+| `ros_robot_controller` : `校验失败` | Problème hardware (câble/contrôleur série) | Moteurs peuvent ne pas fonctionner |
+| `servo_controller` crash (exit -2) | Problème hardware servos | Bras/pince peuvent ne pas fonctionner |
+
+### Commandes de reprise (robot allumé)
+
+```bash
+# 1. Terminal robot, charger l'environnement CORRECTEMENT :
+source ~/.bashrc
+# Vérifier :
+echo $OLLAMA_URL        # doit afficher: http://192.168.1.20:11434
+echo $SPEECH_LANG       # doit afficher: fr
+
+# 2. Patcher le scan lent (si pas encore fait) :
+cd ~/.local/lib/python3.10/site-packages/speech
+sed -i 's|for item in base.rglob("\*"):|for item in list(base.rglob("*.bin")) + list(base.rglob("lexicon*")) + list(base.rglob("espeak-ng-data")) + list(base.rglob("voices*")):|g' speech_offline_patch.py
+
+# 3. Relancer la démo :
+ros2 launch large_models_examples llm_control_move.launch.py
+
+# 4. Attendre 10-20 secondes, puis tester :
+# Parler en français : "Bonjour", "Avance"
+# (ASR encore en anglais temporairement -> dire "Forward", "Hello")
+```
+
+### Ce qu'il faut faire ensuite (par ordre de priorité)
+
+1. **PATCHER le scan lent** (sed ci-dessus) → débloque `vocal_detect`
+2. **Tester la chaîne vocale** : micro → ASR → LLM → TTS → haut-parleur
+3. **Corriger l'ASR pour le français** : modifier le fichier de launch
+   `~/ros2_ws/src/large_models_examples/large_models_examples/llm_control_move.launch.py`
+   pour pointer `asr_server` vers le modèle FR au lieu de EN
+4. **Vérifier le hardware** : `ros_robot_controller` `校验失败` → câble USB/série
+5. **Tester les mouvements** : "Avance", "Tourne à gauche", "Stop"
+
+---
 
 ## Objectif
 
@@ -178,6 +264,9 @@ Dernier commit : `d579013` (17/10 ~22h00)
 
 ---
 
-**Prochaine session** : recharger la batterie, transférer le nouveau zip,
-lancer `install_on_robot.sh`, tester les commandes vocales EN FRANÇAIS,
-puis passer au projet toy_sorter.
+**Prochaine session (18/10 01:15)** : robot allumé, démo en cours.
+1. Patcher le scan lent (`sed` ci-dessus, section "Problème actuel")
+2. Relancer `ros2 launch large_models_examples llm_control_move.launch.py`
+3. Tester la voix (ASR anglais temporairement, TTS/LLM français)
+4. Corriger l'ASR pour le français dans le fichier de launch
+5. Vérifier le hardware (moteurs/servos)
