@@ -1,12 +1,105 @@
 # ETAT DU PROJET — ROSOrin Pro (LLM local + speech offline FRANCAIS)
 
-Dernière mise à jour : 18/10/2026 01:15 — **EN COURS : test vocal FR sur robot**
+Dernière mise à jour : 18/10/2026 04:35 — **ROBOT SANS BATTERIE, à recharger**
 
 ---
 
-## 🔄 SESSION EN COURS (18/10 01:00-01:15)
+## 🔄 SESSION EN COURS (18/10 03:50-04:35) — Diagnostic mouvement vocal
 
-### Ce qui a été fait aujourd'hui :
+### ✅ Ce qui fonctionne
+
+| Composant | Statut | Détails |
+|-----------|--------|---------|
+| ASR français | ✅ | `vocal_detect` initialisé avec `zipformer-fr-2023-04-14` |
+| TTS français | ✅ | `tts_node` initialisé avec `vits-piper-fr_FR-siwis-medium` |
+| LLM (PC) | ✅ | `agent_process` connecté à `http://192.168.1.20:11434` |
+| Réponse vocale FR | ✅ | Le robot dit "Je suis prêt à vous aider" |
+| Nœuds actifs | ✅ | `/vocal_detect`, `/agent_process`, `/tts_node`, `/llm_control_move` |
+| Hardware moteurs | ✅ | Test manuel `/cmd_vel` → le robot avance |
+
+### ❌ Problème en cours : le robot ne bouge pas sur commande vocale
+
+**Symptôme** : Le robot comprend et répond ("hello hiwonder"), mais ne bouge pas quand on dit "Avance"/"Forward".
+
+**Diagnostic effectué** :
+- `/controller/cmd_vel` publie des `Twist` avec valeurs à 0 (stop)
+- `/llm_control_move` écoute `/agent_process/result` et publie `/controller/cmd_vel`
+- Le LLM reçoit les ordres mais ne génère pas le format JSON attendu :
+  ```json
+  "action": "move('forward', 1, 0)", "response": "OK"
+  ```
+
+**Cause probable** : Le prompt système du nœud `llm_control_move` (en anglais,来自 firmware)
+demande un format JSON strict. Notre wrapper force peut-être un prompt FR qui perturbe ce format.
+
+**Test effectué** : `SPEECH_FORCE_FR=0` → toujours pas de mouvement.
+
+### 🔍 Prochaines étapes (quand batterie rechargée)
+
+1. **Relancer la démo** :
+   ```bash
+   source /home/ubuntu/.bashrc
+   ros2 launch large_models_examples llm_control_move.launch.py
+   ```
+
+2. **Surveiller les topics** (3 terminaux) :
+   ```bash
+   # Terminal A
+   ros2 topic echo /vocal_detect/asr_result
+   # Terminal B
+   ros2 topic echo /agent_process/result
+   # Terminal C
+   ros2 topic echo /controller/cmd_vel
+   ```
+
+3. **Dire "Forward"** et observer :
+   - Terminal A : le texte reconnu par l'ASR
+   - Terminal B : la réponse brute du LLM (JSON ou texte ?)
+   - Terminal C : les commandes de mouvement (0 = stop, >0 = mouvement)
+
+4. **Si le LLM répond en texte et pas en JSON** :
+   - Le problème vient du prompt système
+   - Solution : modifier le prompt dans le wrapper pour qu'il génère du JSON
+     même en français, OU désactiver `SPEECH_FORCE_FR` pour ce nœud
+
+5. **Vérifier le réveil (wakeup)** :
+   ```bash
+   ros2 topic echo /vocal_detect/wakeup
+   ```
+   Le nœud `llm_control_move` attend peut-être un signal de réveil avant d'agir.
+
+### 📝 Patch appliqué sur le robot (scan rapide)
+
+```bash
+cd /home/ubuntu/.local/lib/python3.10/site-packages/speech
+sed -i 's|for item in base.rglob("\*"):|for item in list(base.rglob("*.bin")) + list(base.rglob("lexicon*")) + list(base.rglob("espeak-ng-data")) + list(base.rglob("voices*")):|g' speech_offline_patch.py
+```
+
+### Variables d'environnement (vérifiées OK)
+
+```bash
+OLLAMA_URL=http://192.168.1.20:11434
+SPEECH_LANG=fr
+SPEECH_FORCE_FR=1  # À tester avec 0 si problème de format JSON
+```
+
+### Fichiers clés
+
+| Fichier | Chemin |
+|---------|--------|
+| Wrapper PC | `C:\Users\bloiz\projets\Robot\speech_patch\speech_offline_patch.py` |
+| Wrapper robot | `/home/ubuntu/.local/lib/python3.10/site-packages/speech/speech_offline_patch.py` |
+| Fichier launch | `/home/ubuntu/ros2_ws/src/large_models_examples/large_models_examples/llm_control_move.launch.py` |
+
+### Dernier commit
+
+`e71665b` — docs: session 18/10, état du diagnostic mouvement vocal
+
+---
+
+## 🔄 SESSION PRÉCÉDENTE (18/10 01:00-01:15)
+
+### Ce qui a été fait :
 
 | Étape | Statut |
 |-------|--------|
@@ -264,9 +357,11 @@ Dernier commit : `d579013` (17/10 ~22h00)
 
 ---
 
-**Prochaine session (18/10 01:15)** : robot allumé, démo en cours.
-1. Patcher le scan lent (`sed` ci-dessus, section "Problème actuel")
-2. Relancer `ros2 launch large_models_examples llm_control_move.launch.py`
-3. Tester la voix (ASR anglais temporairement, TTS/LLM français)
-4. Corriger l'ASR pour le français dans le fichier de launch
-5. Vérifier le hardware (moteurs/servos)
+**Prochaine session (18/10 04:35)** : robot sans batterie, à recharger.
+1. Recharger la batterie, allumer le robot
+2. Relancer : `source /home/ubuntu/.bashrc` puis `ros2 launch large_models_examples llm_control_move.launch.py`
+3. Surveiller `/agent_process/result` pour voir le format de sortie du LLM
+4. Si le LLM ne génère pas de JSON → modifier le prompt FR ou désactiver `SPEECH_FORCE_FR`
+5. Vérifier `/vocal_detect/wakeup` (signal de réveil peut-être nécessaire)
+6. Une fois les mouvements OK → corriger l'ASR pour le FR dans le fichier de launch
+7. Puis passer au projet toy_sorter
