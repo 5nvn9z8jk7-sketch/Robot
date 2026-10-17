@@ -37,6 +37,8 @@ En attendant, ce dossier contient un wrapper qui émule les trois classes :
 - speech_offline_patch.py — le wrapper (à transférer sur le robot, il s'installe tout seul)
 - install_on_robot.sh — script de confort (appelle le --install du wrapper)
 - test_wrapper.py — tests (à lancer sur le PC et/ou sur le robot)
+- test_depuis_robot.sh — test de connectivité robot → PC (à lancer SUR le robot)
+- autoriser_ollama_firewall.bat — règle pare-feu Windows (à lancer EN ADMIN sur le PC)
 - README.md — ce fichier
 
 ## Déploiement sur le robot
@@ -81,22 +83,30 @@ Pas de mot de passe SSH connu -> déploiement manuel via NoMachine.
 
 ## Côté PC : rendre Ollama joignable depuis le robot
 
-Ollama écoute déjà sur 0.0.0.0:11434 (vérifié le 16/10). Deux points de vigilance :
+Ollama écoute déjà sur 0.0.0.0:11434 (vérifié le 17/10). Trois points de vigilance :
 
-- Pare-feu Windows : autoriser le port 11434 en entrée (profil privé).
-- IP du PC : le routeur attribue l'IP en DHCP. Aujourd'hui le PC est en
-  192.168.1.20. Si l'IP change, le robot ne trouvera plus Ollama : relancer
-  l'installation avec la nouvelle IP :
+1. **Pare-feu Windows** : le profil privé bloque les entrées par défaut.
+   Exécuter **en tant qu'administrateur** :
 
-    python3 speech_offline_patch.py --install --ollama-url http://<NOUVELLE_IP>:11434
+       speech_patch\autoriser_ollama_firewall.bat
 
-  ou définir la variable d'environnement OLLAMA_URL avant de lancer ROS.
-  Pour éviter les surprises : réserver l'IP du PC dans le routeur (DHCP
-  statique) ou lui mettre une IP fixe.
+   (clic droit → Exécuter en tant qu'administrateur)
 
-Vérification depuis le robot :
+2. **IP du PC** : le routeur attribue l'IP en DHCP. Aujourd'hui le PC est en
+   192.168.1.20 (vérifié le 17/10, inchangé). Si l'IP change, le robot ne
+   trouvera plus Ollama : relancer l'installation avec la nouvelle IP :
 
-    curl http://192.168.1.20:11434/api/tags
+       python3 speech_offline_patch.py --install --ollama-url http://<NOUVELLE_IP>:11434
+
+   ou définir la variable d'environnement OLLAMA_URL avant de lancer ROS.
+   Pour éviter les surprises : réserver l'IP du PC dans le routeur (DHCP
+   statique) ou lui mettre une IP fixe.
+
+3. **Vérification depuis le robot** (avant d'installer le patch) :
+
+       bash ~/Bureau/speech_patch/test_depuis_robot.sh
+
+   Ce script teste : ping du PC, port 11434 ouvert, API Ollama, completion LLM.
 
 ## Piège : les modèles "thinking" (qwen3.x)
 
@@ -150,6 +160,6 @@ Sur le PC (Ollama local requis) :
     cd C:/Users/bloiz/projets/Robot/speech_patch
     python3 test_wrapper.py
 
-Dernier résultat (16/10) : 35 PASS, 0 FAIL, 2 SKIP (les 2 SKIP concernent
+Dernier résultat (17/10) : 35 PASS, 0 FAIL, 2 SKIP (les 2 SKIP concernent
 sherpa-onnx, absent du PC — à valider sur le robot).
 

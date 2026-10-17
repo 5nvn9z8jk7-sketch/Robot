@@ -1,6 +1,6 @@
 # ETAT DU PROJET — ROSOrin Pro (LLM local + français)
 
-Dernière mise à jour : 16/10/2026 ~22h40 (fin de session, piste 2 terminée côté PC)
+Dernière mise à jour : 17/10/2026 ~10h00 (préparation déploiement, pare-feu identifié)
 
 ## Objectif
 
@@ -19,7 +19,7 @@ user ubuntu) pour que le LLM tourne en local et réponde en français.
 - -> Piste 2 choisie et terminée : wrapper Python qui émule les 3 classes
   avec sherpa-onnx (déjà sur le robot) + Ollama (tournant sur le PC).
 
-## Ce qui est fait (16/10)
+## Ce qui est fait (16-17/10)
 
 Dossier speech_patch/ — prêt et testé :
 
@@ -31,7 +31,10 @@ Dossier speech_patch/ — prêt et testé :
   - CLI : --install / --uninstall / --selftest, options --ollama-url / --ollama-model
 - install_on_robot.sh — déploiement en une commande sur le robot
 - test_wrapper.py — 35 PASS, 0 FAIL, 2 SKIP (SKIP = sherpa-onnx absent du PC)
-- README.md — procédure complète de déploiement NoMachine
+- test_depuis_robot.sh — test connectivité robot→PC (ping, port, API, LLM) [17/10]
+- autoriser_ollama_firewall.bat — règle pare-feu Windows à lancer EN ADMIN [17/10]
+- speech_patch_deploy.zip — archive prête à transférer (17 Ko) [17/10]
+- README.md — procédure complète de déploiement NoMachine (mise à jour 17/10)
 
 Corrections vs le brouillon du 15/10 :
 - fix qwen "thinking" : num_predict >= 2048 (validé : qwen3.5:9b répond avec 2048)
@@ -40,45 +43,72 @@ Corrections vs le brouillon du 15/10 :
 - listen() ne stoppe plus l'ASR au timeout
 - TTS : lecture au sample_rate réel du modèle
 
-## Environnement
+## Environnement (vérifié le 17/10)
 
 PC :
-- IP 192.168.1.20 (DHCP — surveiller, l'IP peut changer)
-- Ollama v0.40.5 sur 0.0.0.0:11434, modèles : qwen3.5:9b, qwen3.5-32k,
-  qwen3.6:35b, qwen3.6-32k, mistral:latest, nomic-embed-text
+- IP 192.168.1.20 (DHCP — inchangée depuis le 16/10)
+- Ollama v0.40.5 sur 0.0.0.0:11434 (vérifié : écoute bien sur toutes les interfaces)
+- 6 modèles : qwen3.5:9b, qwen3.5-32k, qwen3.6:35b, qwen3.6-32k, mistral:latest,
+  nomic-embed-text
 - qwen3.5:9b = modèle "thinking" -> réponses VIDES si num_predict < 2048
 - NoMachine Personal Edition 10.2.3 : C:/Program Files/NoMachine/, client nxplayer.exe
+- Pare-feu Windows : profil privé ACTIF (BlockInbound) -> port 11434 BLOQUÉ en entrée
+  => exécuter autoriser_ollama_firewall.bat EN ADMIN avant le déploiement
 
-Robot :
+Robot (192.168.1.30 — en ligne le 17/10) :
+- Ping OK, table ARP OK (MAC 90-de-80-a1-13-f1)
 - NoMachine serveur v9.1.24, port 4000 ; user ubuntu
 - SSH port 22 ouvert mais MOT DE PASSE INCONNU (testés sans succès : ubuntu,
   hiwonder, jetson, nvidia, yahboom, 123456, password)
-- Interface web ROS port 8080 ouverte (topics caméra OK)
+- Interface web ROS port 8080 ouverte (HTTP 200, topics caméra OK)
 - Modèles sherpa-onnx : ~/third_party/sherpa-onnx (zipformer-en ASR, vits-ljs TTS)
 - speech v2.0 : ~/.local/lib/python3.10/site-packages/speech
 
+Tests (17/10) :
+- toy_sorter : 14/14 PASS
+- simulation virtuelle : 5/5 jouets rangés (seed 42)
+- speech_patch test_wrapper.py : 35 PASS, 0 FAIL, 2 SKIP
+
 ## Prochaines étapes (à faire manuellement)
 
-1. NoMachine -> 192.168.1.30:4000 (utilisateur ubuntu)
-2. Transférer le dossier speech_patch/ sur le Bureau du robot (glisser-déposer)
-3. Terminal sur le robot :
+### Étape 0 — PC : autoriser Ollama dans le pare-feu Windows
+
+    speech_patch\autoriser_ollama_firewall.bat
+    (clic droit → Exécuter en tant qu'administrateur)
+
+Sans ça, le robot ne peut pas atteindre Ollama (profil privé = BlockInbound).
+
+### Étape 1 — NoMachine → robot
+
+    NoMachine → 192.168.1.30:4000 (utilisateur ubuntu)
+
+### Étape 2 — Transférer le patch sur le robot
+
+Glisser-déposer `speech_patch_deploy.zip` (17 Ko) ou le dossier `speech_patch/`
+sur le Bureau du robot.
+
+### Étape 3 — Terminal sur le robot
 
     cd ~/Bureau/speech_patch
-    bash install_on_robot.sh
+    bash test_depuis_robot.sh          # vérifie que le PC est joignable
+    bash install_on_robot.sh           # installe le wrapper
     python3 speech_offline_patch.py --selftest
 
-4. Relancer la démo :
+### Étape 4 — Relancer la démo
 
     ros2 launch large_models_examples llm_control_move.launch.py
 
-5. Optionnel — valider ASR/TTS sur le robot : python3 test_wrapper.py
+### Étape 5 — Optionnel : valider ASR/TTS sur le robot
+
+    python3 test_wrapper.py
 
 ## Pièges / à savoir
 
+- **Pare-feu Windows** : le profil privé bloque les entrées. Sans la règle
+  autoriser_ollama_firewall.bat, le robot ne voit pas Ollama (timeout).
 - IP du PC en DHCP : si elle change, relancer :
   python3 speech_offline_patch.py --install --ollama-url http://<NOUVELLE_IP>:11434
   ou définir la variable d'environnement OLLAMA_URL avant de lancer ROS.
-- Pare-feu Windows : autoriser le port 11434 en entrée.
 - ASR = anglais (zipformer-en) : donner les commandes en anglais.
 - TTS vits-ljs = voix anglaise : lit le français avec un accent.
 - Le LLM répond en français via le prompt système (fixé par le nœud firmware).
@@ -90,7 +120,7 @@ Robot :
 
 ## Projets liés
 
-- C:/Users/bloiz/projets/Robot/toy_sorter (ROS2, 14 tests OK, 11 commits non pushés)
+- C:/Users/bloiz/projets/Robot/ros2_ws/src/toy_sorter (ROS2, 14 tests OK, tout pushé)
 - C:/Users/bloiz/assistant-vocal/ (assistant vocal PC — même bug qwen dans
   brain.py : max_tokens absent)
 
