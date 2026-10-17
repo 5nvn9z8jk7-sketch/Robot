@@ -58,6 +58,7 @@ def _find_sherpa_models(sherpa_dir=None):
     base = Path(os.path.expanduser(sherpa_dir or DEFAULT_SHERPA_DIR))
     result = {
         "asr_model": None, "asr_tokens": None,
+        "asr_encoder": None, "asr_decoder": None, "asr_joiner": None,
         "tts_model": None, "tts_tokens": None, "tts_voices": None,
         "tts_lexicon": None, "tts_dict_dir": None,
         "base_dir": str(base),
@@ -65,25 +66,57 @@ def _find_sherpa_models(sherpa_dir=None):
     if not base.exists():
         return result
 
-    for item in base.rglob("*.onnx"):
+    # Collecte tous les .onnx avec leur chemin complet
+    onnx_files = list(base.rglob("*.onnx"))
+
+    # --- TTS : vits ou tts dans le nom OU le chemin ---
+    for item in onnx_files:
+        full = str(item).lower()
         name = item.name.lower()
-        if "vits" in name or "tts" in name:
+        if "vits" in name or "tts" in name or "vits" in full:
             if result["tts_model"] is None:
                 result["tts_model"] = str(item)
-        elif any(k in name for k in ("zipformer", "transducer", "paraformer", "asr")):
-            if result["asr_model"] is None:
-                result["asr_model"] = str(item)
 
+    # --- ASR : zipformer/paraformer/transducer dans le chemin complet ---
+    for item in onnx_files:
+        full = str(item).lower()
+        name = item.name.lower()
+        # Cherche dans le chemin complet (dossier parent peut contenir "zipformer")
+        if any(k in full for k in ("zipformer", "paraformer", "transducer", "asr")):
+            # Modele unique (fichier .onnx avec zipformer dans le nom)
+            if "zipformer" in name or "paraformer" in name:
+                if result["asr_model"] is None:
+                    result["asr_model"] = str(item)
+            # Modele transducer separe : encoder/decoder/joiner
+            elif "encoder" in name and result["asr_encoder"] is None:
+                result["asr_encoder"] = str(item)
+            elif "decoder" in name and result["asr_decoder"] is None:
+                result["asr_decoder"] = str(item)
+            elif "joiner" in name and result["asr_joiner"] is None:
+                result["asr_joiner"] = str(item)
+
+    # Si on a encoder+decoder+joiner, utiliser le dossier comme asr_model
+    if result["asr_encoder"] and result["asr_decoder"] and result["asr_joiner"]:
+        result["asr_model"] = result["asr_encoder"]  # sera gere par _init_recognizer
+
+    # --- Tokens ---
     for item in base.rglob("tokens.txt"):
-        if result["tts_model"] and item.parent == Path(result["tts_model"]).parent:
+        parent = item.parent
+        # TTS tokens : meme dossier que le modele TTS
+        if result["tts_model"] and parent == Path(result["tts_model"]).parent:
             if result["tts_tokens"] is None:
                 result["tts_tokens"] = str(item)
-        elif result["asr_model"] and item.parent == Path(result["asr_model"]).parent:
+        # ASR tokens : meme dossier que encoder ou modele ASR unique
+        elif result["asr_encoder"] and parent == Path(result["asr_encoder"]).parent:
+            if result["asr_tokens"] is None:
+                result["asr_tokens"] = str(item)
+        elif result["asr_model"] and parent == Path(result["asr_model"]).parent:
             if result["asr_tokens"] is None:
                 result["asr_tokens"] = str(item)
         elif result["asr_tokens"] is None:
             result["asr_tokens"] = str(item)
 
+    # --- TTS voices/lexicon/dict ---
     for item in base.rglob("*"):
         n = item.name.lower()
         if item.is_file() and ("voices" in n or n.endswith(".bin")):
@@ -138,40 +171,71 @@ class OfflineRealTimeASR:
             print("[OfflineRealTimeASR] sherpa_onnx non installe")
             return
         try:
+            # Detecter si c'est un modele streaming (dossier avec "streaming" dans le nom)
+            is_streaming = "streaming" in model_path.lower()
+            self._is_streaming = is_streaming
             mn = os.path.basename(model_path).lower()
             if "paraformer" in mn:
-                self._recognizer = sherpa_onnx.OfflineRecognizer.from_paraformer(
-                    model=model_path, tokens=tokens_path)
+                if is_streaming:
+                    self._recognizer = sherpa_onnx.OnlineRecognizer.from_paraformer(
+                        model=model_path, tokens=tokens_path)
+                else:
+                    self._recognizer = sherpa_onnx.OfflineRecognizer.from_paraformer(
+                        model=model_path, tokens=tokens_path)
             else:
                 md = os.path.dirname(model_path)
+                # Cherche encoder/decoder/joiner dans le dossier du modele
                 enc = dec = joi = None
-                for key, names in (("encoder", ("encoder.onnx", "encoder.int8.onnx")),
-                                   ("decoder", ("decoder.onnx", "decoder.int8.onnx")),
-                                   ("joiner", ("joiner.onnx", "joiner.int8.onnx"))):
-                    for n in names:
-                        p = os.path.join(md, n)
-                        if os.path.exists(p):
-                            if key == "encoder":
-                                enc = p
-                            elif key == "decoder":
-                                dec = p
-                            else:
-                                joi = p
-                            break
+                # Essayer d'abord les noms generiques, puis les noms avec epoch
+                for key, patterns in (("encoder", ("encoder.onnx", "encoder.int8.onnx", "encoder-epoch-*.onnx", "encoder-epoch-*.int8.onnx")),
+                                      ("decoder", ("decoder.onnx", "decoder.int8.onnx", "decoder-epoch-*.onnx", "decoder-epoch-*.int8.onnx")),
+                                      ("joiner", ("joiner.onnx", "joiner.int8.onnx", "joiner-epoch-*.onnx", "joiner-epoch-*.int8.onnx"))):
+                    for pat in patterns:
+                        if "*" in pat:
+                            import glob
+                            matches = sorted(glob.glob(os.path.join(md, pat)))
+                            # Preferer la version non-int8
+                            for m in matches:
+                                if ".int8." not in m:
+                                    if key == "encoder": enc = m
+                                    elif key == "decoder": dec = m
+                                    else: joi = m
+                                    break
+                            if (key == "encoder" and enc) or (key == "decoder" and dec) or (key == "joiner" and joi):
+                                continue
+                            if matches:
+                                if key == "encoder": enc = matches[0]
+                                elif key == "decoder": dec = matches[0]
+                                else: joi = matches[0]
+                        else:
+                            p = os.path.join(md, pat)
+                            if os.path.exists(p):
+                                if key == "encoder": enc = p
+                                elif key == "decoder": dec = p
+                                else: joi = p
+                                break
                 if enc and dec and joi:
-                    # sherpa-onnx : 3 fichiers separes
-                    self._recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
-                        encoder=enc, decoder=dec, joiner=joi, tokens=tokens_path)
+                    if is_streaming:
+                        self._recognizer = sherpa_onnx.OnlineRecognizer.from_transducer(
+                            encoder=enc, decoder=dec, joiner=joi, tokens=tokens_path)
+                    else:
+                        self._recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
+                            encoder=enc, decoder=dec, joiner=joi, tokens=tokens_path)
                 else:
-                    # sherpa-onnx recent : un seul fichier modele (zipformer)
-                    try:
-                        self._recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
+                    # Modele unique (zipformer recent)
+                    if is_streaming:
+                        self._recognizer = sherpa_onnx.OnlineRecognizer.from_transducer(
                             model=model_path, tokens=tokens_path)
-                    except TypeError:
-                        self._recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
-                            encoder=model_path, decoder=model_path,
-                            joiner=model_path, tokens=tokens_path)
-            print("[OfflineRealTimeASR] Recognizer initialise: %s" % model_path)
+                    else:
+                        try:
+                            self._recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
+                                model=model_path, tokens=tokens_path)
+                        except TypeError:
+                            self._recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
+                                encoder=model_path, decoder=model_path,
+                                joiner=model_path, tokens=tokens_path)
+            mode = "streaming (OnlineRecognizer)" if is_streaming else "offline (OfflineRecognizer)"
+            print("[OfflineRealTimeASR] Recognizer initialise [%s]: %s" % (mode, model_path))
         except Exception as e:
             print("[OfflineRealTimeASR] Erreur init: %s" % e)
 
@@ -226,6 +290,14 @@ class OfflineRealTimeASR:
             if timeout and (time.time() - t0) > timeout:
                 return ""
             time.sleep(0.05)
+
+    def asr(self, timeout=None):
+        """Alias de listen() pour compatibilite firmware Hiwonder v3.0.
+
+        Le noeud vocal_detect appelle : self.asr.asr()
+        Bloque jusqu'a obtenir une phrase transcrite.
+        """
+        return self.listen(timeout=timeout)
 
     def transcribe_file(self, audio_path):
         """Transcrit un fichier WAV (16 kHz mono) hors ligne."""
@@ -374,22 +446,49 @@ class OfflineRealTimeTTS:
             voices = self.models.get("tts_voices") or ""
 
             self._tts = None
-            # API sherpa-onnx >= 1.10 (config explicite)
-            try:
+            last_err = "aucune tentative"
+
+            # Essayer la config explicite avec plusieurs combinaisons
+            vits_configs = [
+                {"model": model_path, "lexicon": lexicon, "data_dir": data_dir, "tokens": tokens},
+                {"model": model_path, "lexicon": lexicon, "dict_dir": data_dir, "tokens": tokens},
+                {"model": model_path, "tokens": tokens, "lexicon": lexicon},
+                {"model": model_path, "tokens": tokens},
+                {"model": model_path},
+            ]
+            model_configs = [
+                {"vits": None, "voices": voices},  # vits sera remplace
+                {"vits": None, "sid": self.speaker_id},
+                {"vits": None},
+            ]
+
+            for vc_kw in vits_configs:
+                vc_kw = {k: v for k, v in vc_kw.items() if v}
                 try:
-                    vits_config = sherpa_onnx.OfflineTtsVitsModelConfig(
-                        model=model_path, lexicon=lexicon,
-                        data_dir=data_dir, tokens=tokens)
-                except TypeError:
-                    vits_config = sherpa_onnx.OfflineTtsVitsModelConfig(
-                        model=model_path, lexicon=lexicon,
-                        dict_dir=data_dir, tokens=tokens)
-                model_config = sherpa_onnx.OfflineTtsModelConfig(
-                    vits=vits_config, voices=voices)
-                tts_config = sherpa_onnx.OfflineTtsConfig(model=model_config)
-                self._tts = sherpa_onnx.OfflineTts(tts_config)
-            except (AttributeError, TypeError):
-                # Ancienne API (kwargs directs)
+                    vits_config = sherpa_onnx.OfflineTtsVitsModelConfig(**vc_kw)
+                except Exception as e:
+                    last_err = "VitsModelConfig %s: %s" % (list(vc_kw.keys()), e)
+                    continue
+                for mc_kw in model_configs:
+                    mc_kw = dict(mc_kw)
+                    mc_kw["vits"] = vits_config
+                    mc_kw = {k: v for k, v in mc_kw.items() if v is not None}
+                    try:
+                        model_config = sherpa_onnx.OfflineTtsModelConfig(**mc_kw)
+                    except Exception as e:
+                        last_err = "ModelConfig %s: %s" % (list(mc_kw.keys()), e)
+                        continue
+                    try:
+                        tts_config = sherpa_onnx.OfflineTtsConfig(model=model_config)
+                        self._tts = sherpa_onnx.OfflineTts(tts_config)
+                        print("[OfflineRealTimeTTS] TTS initialise (config): %s" % model_path)
+                        return
+                    except Exception as e:
+                        last_err = "OfflineTts(config): %s" % e
+                        continue
+
+            # Fallback : ancienne API kwargs directs
+            if self._tts is None:
                 candidates = [
                     {"model": model_path, "tokens": tokens, "voices": voices,
                      "lexicon": lexicon, "dict_dir": data_dir, "num_threads": 2},
@@ -402,13 +501,17 @@ class OfflineRealTimeTTS:
                     kw = {k: v for k, v in kw.items() if v}
                     try:
                         self._tts = sherpa_onnx.OfflineTts(**kw)
-                        break
-                    except TypeError:
+                        print("[OfflineRealTimeTTS] TTS initialise (kwargs): %s" % model_path)
+                        return
+                    except Exception as e:
+                        last_err = "kwargs %s: %s" % (list(kw.keys()), e)
                         continue
+
             if self._tts is not None:
                 print("[OfflineRealTimeTTS] TTS initialise: %s" % model_path)
             else:
                 print("[OfflineRealTimeTTS] Impossible d initialiser le TTS")
+                print("[OfflineRealTimeTTS] Derniere erreur: %s" % last_err)
         except Exception as e:
             print("[OfflineRealTimeTTS] Erreur init: %s" % e)
 
@@ -533,6 +636,10 @@ class OllamaAPI:
 
     def __init__(self, url=None, model=None, api_key=None, **kwargs):
         url = url or kwargs.get("host") or kwargs.get("base_url")
+        # Priorite a la variable d'environnement OLLAMA_URL (force l'URL du PC)
+        env_url = os.environ.get("OLLAMA_URL", "")
+        if env_url:
+            url = env_url
         self.url = (url or DEFAULT_OLLAMA_URL).rstrip("/")
         self.model = model or kwargs.get("model_name") or DEFAULT_OLLAMA_MODEL
         self.system_prompt = kwargs.get("system_prompt", "") or ""
@@ -610,6 +717,16 @@ class OllamaAPI:
         return self.chat([{"role": "user", "content": prompt}],
                          system=system, temperature=temperature,
                          max_tokens=max_tokens, model=model)
+
+    def llm(self, prompt, system="", temperature=0.1,
+            max_tokens=DEFAULT_MAX_TOKENS, model=None, **kwargs):
+        """Alias de generate() pour compatibilite firmware Hiwonder v3.0.
+
+        Le noeud agent_process appelle : self.client.llm(prompt, system, model=...)
+        """
+        return self.generate(prompt, system=system or None,
+                             temperature=temperature,
+                             max_tokens=max_tokens, model=model)
 
     def stream_chat(self, messages=None, callback=None, system=None,
                     temperature=0.1, max_tokens=DEFAULT_MAX_TOKENS, model=None):
@@ -815,47 +932,72 @@ def install(ollama_url=None, ollama_model=None):
             print("Sauvegarde : %s" % bak)
 
     NL = chr(10)
-    # 3. Branchement dans speech.py (idempotent)
-    with open(speech_py, "r", encoding="utf-8") as f:
-        current = f.read()
-    if _INSTALL_MARKER in current:
-        print("speech.py : patch deja present")
-    else:
-        block = NL.join([
-            "",
-            _INSTALL_MARKER,
-            "try:",
-            "    try:",
-            "        from .speech_offline_patch import OfflineRealTimeASR, OfflineRealTimeTTS, OllamaAPI",
-            "    except ImportError:",
-            "        from speech_offline_patch import OfflineRealTimeASR, OfflineRealTimeTTS, OllamaAPI",
-            "except Exception:",
-            "    import traceback",
-            "    traceback.print_exc()",
-            "# === FIN PATCH OFFLINE HIWONDER ===",
-            "",
-        ])
-        with open(speech_py, "a", encoding="utf-8") as f:
-            f.write(block)
-        print("Import du patch ajoute a la fin de speech.py")
+    # 3. Branchement : dans speech.py si existe, sinon auto_patch dans __init__.py
+    if os.path.exists(speech_py):
+        # Cas classique : speech.py existe
+        with open(speech_py, "r", encoding="utf-8") as f:
+            current = f.read()
+        if _INSTALL_MARKER in current:
+            print("speech.py : patch deja present")
+        else:
+            block = NL.join([
+                "",
+                _INSTALL_MARKER,
+                "try:",
+                "    try:",
+                "        from .speech_offline_patch import OfflineRealTimeASR, OfflineRealTimeTTS, OllamaAPI",
+                "    except ImportError:",
+                "        from speech_offline_patch import OfflineRealTimeASR, OfflineRealTimeTTS, OllamaAPI",
+                "except Exception:",
+                "    import traceback",
+                "    traceback.print_exc()",
+                "# === FIN PATCH OFFLINE HIWONDER ===",
+                "",
+            ])
+            with open(speech_py, "a", encoding="utf-8") as f:
+                f.write(block)
+            print("Import du patch ajoute a la fin de speech.py")
 
-    # 4. Exposition au niveau du package (from speech import OllamaAPI)
-    with open(init_py, "r", encoding="utf-8") as f:
-        current = f.read()
-    if _INSTALL_MARKER not in current:
-        block = NL.join([
-            "",
-            _INSTALL_MARKER,
-            "try:",
-            "    from .speech import OfflineRealTimeASR, OfflineRealTimeTTS, OllamaAPI",
-            "except Exception:",
-            "    pass",
-            "# === FIN PATCH OFFLINE HIWONDER ===",
-            "",
-        ])
-        with open(init_py, "a", encoding="utf-8") as f:
-            f.write(block)
-        print("Import du patch ajoute a la fin de __init__.py")
+        # 4a. Exposition au niveau du package (from speech import OllamaAPI)
+        with open(init_py, "r", encoding="utf-8") as f:
+            current = f.read()
+        if _INSTALL_MARKER not in current:
+            block = NL.join([
+                "",
+                _INSTALL_MARKER,
+                "try:",
+                "    from .speech import OfflineRealTimeASR, OfflineRealTimeTTS, OllamaAPI",
+                "except Exception:",
+                "    pass",
+                "# === FIN PATCH OFFLINE HIWONDER ===",
+                "",
+            ])
+            with open(init_py, "a", encoding="utf-8") as f:
+                f.write(block)
+            print("Import du patch ajoute a la fin de __init__.py")
+    else:
+        # Cas .so : speech.py n'existe pas, on branche auto_patch dans __init__.py
+        print("speech.py absent (module .so detecte), branchement auto_patch dans __init__.py")
+        with open(init_py, "r", encoding="utf-8") as f:
+            current = f.read()
+        if _INSTALL_MARKER in current:
+            print("__init__.py : patch deja present")
+        else:
+            block = NL.join([
+                "",
+                _INSTALL_MARKER,
+                "try:",
+                "    from .speech_offline_patch import auto_patch",
+                "    auto_patch()",
+                "except Exception:",
+                "    import traceback",
+                "    traceback.print_exc()",
+                "# === FIN PATCH OFFLINE HIWONDER ===",
+                "",
+            ])
+            with open(init_py, "a", encoding="utf-8") as f:
+                f.write(block)
+            print("auto_patch() ajoute a la fin de __init__.py")
 
     # 5. Verification dans un sous-processus
     code = (
@@ -939,8 +1081,13 @@ def selftest(ollama_url=None):
     found = _find_sherpa_models()
     print("Sherpa-onnx : %s" % found["base_dir"])
     print("    ASR : %s" % (found["asr_model"] or "NON TROUVE"))
+    if found.get("asr_encoder"):
+        print("    ASR encoder : %s" % found["asr_encoder"])
+        print("    ASR decoder : %s" % (found.get("asr_decoder") or "NON TROUVE"))
+        print("    ASR joiner  : %s" % (found.get("asr_joiner") or "NON TROUVE"))
+    print("    ASR tokens  : %s" % (found.get("asr_tokens") or "NON TROUVE"))
     print("    TTS : %s" % (found["tts_model"] or "NON TROUVE"))
-    if not found["asr_model"]:
+    if not found["asr_model"] and not found.get("asr_encoder"):
         ok = False
     if not found["tts_model"]:
         ok = False
