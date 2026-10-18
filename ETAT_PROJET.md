@@ -692,14 +692,84 @@ Fichiers test WAV → transcription OK :
                                            └─────────────┘
 ```
 
+## ✅ SESSION 18/10 21:00-21:20 — Test utilisateur final + fix SSH PowerShell
+
+### 🎉 Test utilisateur réussi
+
+L'utilisateur a parlé au robot, le moniteur a capturé la chaîne complète :
+
+```
+21:15:05  ASR:  "EN HEURE"       ← utilisateur parle
+21:15:11  LLM:  move('forward', 0, 2) + "OK, 2 seconds forward."
+21:15:11  TTS:  "OK, 2 seconds forward."
+21:15:11  MOVE: AVANCE (v=0.20)
+21:15:13  MOVE: GAUCHE (rot=1.00)
+21:15:51  ASR:  "UN MÈTRE"
+21:15:51  LLM:  move('forward', 1, 0) + "OK, 1 meter forward."
+21:15:51  MOVE: AVANCE (v=0.20)
+```
+
+**3 commandes vocales reconnues, 3 mouvements exécutés.** ✅
+
+### 🐛 Problème `agent_process` bloqué (résolu)
+
+Après ~20h de fonctionnement, le nœud `agent_process` ne répondait plus aux
+messages ASR (publish manuel sur `/vocal_detect/asr_result` sans réaction).
+
+**Cause** : le nœud était bloqué (probablement dans un appel LLM qui n'a pas
+retourné). Les services (`get_chat`, `init_finish`) répondaient encore, le
+nœud semblait vivant mais le callback ASR ne se déclenchait plus.
+
+**Solution** : redémarrage complet de la démo via `restart_demo.sh`.
+
+### 🔧 Fix SSH PowerShell (résolu)
+
+`ssh robot` ne marchait pas depuis PowerShell car le fichier
+`C:\Users\bloiz\.ssh\config` utilisait un chemin Git Bash
+(`IdentityFile /c/Users/bloiz/.ssh/id_robot`).
+
+**Fix appliqué** : chemin Windows dans le config. `ssh robot` marche
+maintenant depuis PowerShell, Git Bash et CMD.
+
+Si ça ne marche toujours pas, utiliser l'IP directement :
+```powershell
+ssh -i C:\Users\bloiz\.ssh\id_robot ubuntu@192.168.1.30 "commande"
+```
+
+### 🔑 Points clés à retenir
+
+| Élément | Valeur |
+|---------|--------|
+| Redémarrer la démo | `ssh robot "bash /home/ubuntu/restart_demo.sh"` |
+| Voir logs ASR | `ssh robot "tail -f /home/ubuntu/simple_asr.log"` |
+| Voir logs démo | `ssh robot "tail -f /home/ubuntu/demo_launch.log"` |
+| Monitoring PC | `python3 speech_patch/monitor_asr.py 60` |
+| Tuer simple_asr | `ssh robot "bash /home/ubuntu/kill_asr.sh"` |
+| Seuil VAD | 100 (dans `simple_asr_node.py`, `ENERGY_THRESHOLD`) |
+| Micro USB | device 0, 48kHz stereo → resample 16kHz mono |
+| sherpa-onnx | v1.12.14, pattern `while is_ready(): decode_stream()` |
+| LLM | Ollama `qwen3.5:9b` sur `http://192.168.1.20:11434` |
+| Batterie | 10.9V (~30-40%), recharger bientôt |
+
+### ⚠️ Pièges connus
+
+1. **`agent_process` se bloque après ~20h** → redémarrer la démo
+2. **Ne pas lancer 2x `simple_asr_node`** → utiliser `start_simple_asr.sh` (tue les anciens)
+3. **Le micro USB ne marche qu'en 48kHz** → toujours resampler en 16kHz
+4. **sherpa-onnx 1.12.x** → `get_result(stream)` retourne `str`, pas un objet
+5. **Le LLM répond parfois en anglais** → le prompt FR est un préfixe, pas un remplacement
+
+---
+
 ## Prochaines étapes
 
 1. ✅ Tester avec le vrai micro (parler au robot) — **FAIT, chaîne complète OK**
 2. ✅ Vérifier la batterie — **FAIT, 10.9V (~30-40%)**
-3. ⬜ Corriger `ros_robot_controller` (erreur série `校验失败`)
-4. ⬜ Passer au projet toy_sorter
-5. ⬜ Améliorer la qualité ASR (le LLM répond en anglais, affiner le prompt FR)
+3. ✅ Fix SSH PowerShell — **FAIT, config corrigé**
+4. ⬜ Corriger `ros_robot_controller` (erreur série `校验失败`)
+5. ⬜ Passer au projet toy_sorter
+6. ⬜ Améliorer la qualité ASR (le LLM répond en anglais, affiner le prompt FR)
 
 ---
 
-**Commit actuel** : simple_asr_node + monitor + doc session 18/10 20:45
+**Commit actuel** : session 18/10 21:20 — test utilisateur OK, fix SSH, doc complète
