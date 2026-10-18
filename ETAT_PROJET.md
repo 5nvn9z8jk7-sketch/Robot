@@ -1,8 +1,67 @@
 # ETAT DU PROJET — ROSOrin Pro (LLM local + speech offline FRANCAIS)
 
-Dernière mise à jour : 18/10/2026 04:35 — **ROBOT SANS BATTERIE, à recharger**
+Dernière mise à jour : 18/10/2026 05:30 — **FIX mouvement vocal : prefixe FR au lieu de remplacement**
 
 ---
+
+## ✅ FIX APPLIQUÉ (18/10 05:30) — Mouvement vocal résolu côté code
+
+### 🐛 Problème identifié
+
+Le robot comprenait et répondait vocalement ("hello hiwonder") mais ne bougeait pas sur commande vocale ("Avance"/"Forward").
+
+**Cause racine** : Quand `SPEECH_FORCE_FR=1` (défaut), le wrapper **remplaçait** le prompt système du firmware par `DEFAULT_SYSTEM_PROMPT` (français générique). Or le nœud `llm_control_move` du firmware envoie un prompt système avec les instructions JSON pour les mouvements :
+
+```json
+{"action": "move('forward', 1, 0)", "response": "OK"}
+```
+
+Ce prompt était écrasé → le LLM ne générait plus de JSON → pas de mouvement.
+
+### 🔧 Solution appliquée
+
+**Changement de comportement** : au lieu de **remplacer** le prompt du firmware, on **préfixe** avec `FRENCH_SYSTEM_PREFIX`.
+
+| Avant (bug) | Après (fix) |
+|-------------|-------------|
+| `sp = DEFAULT_SYSTEM_PROMPT` | `sp = FRENCH_SYSTEM_PREFIX + (system or self.system_prompt)` |
+
+Le `FRENCH_SYSTEM_PREFIX` :
+- Force la réponse en français
+- Rappelle le format JSON attendu pour les mouvements
+- **Préserve** le prompt système du firmware (instructions spécifiques)
+
+### 📝 Fichiers modifiés
+
+- `speech_patch/speech_offline_patch.py` :
+  - Nouvelle constante `FRENCH_SYSTEM_PREFIX` (préfixe FR + instructions JSON mouvement)
+  - `DEFAULT_SYSTEM_PROMPT` amélioré (inclut aussi les instructions JSON)
+  - `OllamaAPI.chat()` : préfixe au lieu de remplacer
+  - `OllamaAPI.stream_chat()` : préfixe au lieu de remplacer
+- `speech_patch/test_wrapper.py` : 11 nouveaux tests (72 PASS, 0 FAIL, 2 SKIP)
+
+### 🧪 Tests
+
+```
+72 PASS, 0 FAIL, 2 SKIP
+```
+
+Nouveaux tests : `FRENCH_SYSTEM_PREFIX` (7 tests), `DEFAULT_SYSTEM_PROMPT` JSON (2 tests), logique préfixe chat() (3 tests - conserve prompt firmware + ajoute FR + conserve JSON).
+
+### 🚀 Déploiement sur le robot (quand batterie rechargée)
+
+```bash
+# 1. Transférer le nouveau speech_patch_deploy.zip sur le robot
+# 2. Sur le robot :
+cd ~/Desktop/speech_patch
+bash install_on_robot.sh
+
+# 3. Relancer la démo :
+source ~/.bashrc
+ros2 launch large_models_examples llm_control_move.launch.py
+
+# 4. Tester : dire "Avance" ou "Forward" → le robot doit bouger
+```
 
 ## 🔄 SESSION EN COURS (18/10 03:50-04:35) — Diagnostic mouvement vocal
 

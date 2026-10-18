@@ -62,19 +62,46 @@ DEFAULT_MAX_TOKENS = 4096
 # Langue par defaut pour ASR/TTS/LLM (fr = francais, en = anglais)
 DEFAULT_LANGUAGE = os.environ.get("SPEECH_LANG", "fr")
 
-# Si SPEECH_FORCE_FR=1, le prompt systeme francais remplace TOUJOURS celui
-# fourni par l'appelant (utile car le firmware Hiwonder fixe un prompt chinois).
+# Si SPEECH_FORCE_FR=1, un prefixe francais est AJOUTE devant le prompt systeme
+# fourni par l'appelant (utile car le firmware Hiwonder fixe un prompt chinois
+# ou anglais). Le prefixe force la reponse en francais sans ecraser les
+# instructions specifiques du firmware (ex: format JSON pour les mouvements).
 FORCE_FRENCH_PROMPT = os.environ.get("SPEECH_FORCE_FR", "1") == "1"
 
-# Prompt systeme par defaut pour forcer le LLM a repondre en francais.
-# Le noeud agent_process du firmware Hiwonder fixe son propre prompt (chinois),
-# mais si le wrapper controle le system prompt, on force le francais.
+# Prefixe ajoute devant le prompt systeme du firmware quand SPEECH_FORCE_FR=1.
+# Il force le LLM a repondre en francais ET rappelle le format JSON attendu
+# par le noeud llm_control_move pour les commandes de mouvement.
+FRENCH_SYSTEM_PREFIX = (
+    "IMPORTANT : Tu dois TOUJOURS repondre en francais, de maniere concise et naturelle. "
+    "Quand l'utilisateur demande un mouvement du robot (avancer, reculer, tourner, stop), "
+    "tu dois repondre UNIQUEMENT avec un objet JSON sur une seule ligne, sans texte autour, "
+    "dans ce format exact :\n"
+    '{"action": "move(\'forward\', 1, 0)", "response": "OK"}\n'
+    "Actions disponibles :\n"
+    "- move('forward', vitesse, 0) : avancer (vitesse 0.1 a 1.0)\n"
+    "- move('backward', vitesse, 0) : reculer\n"
+    "- move('left', 0, vitesse) : tourner a gauche\n"
+    "- move('right', 0, vitesse) : tourner a droite\n"
+    "- move('stop', 0, 0) : s'arreter\n"
+    "Le champ 'response' doit contenir ta reponse en francais (ex: 'J'avance'). "
+    "Pour les autres questions (pas de mouvement), reponds normalement en francais, "
+    "en une ou deux phrases maximum.\n\n"
+)
+
+# Prompt systeme par defaut (utilise quand aucun prompt n'est fourni par l'appelant).
+# Inclut les instructions de mouvement en JSON pour le noeud llm_control_move.
 DEFAULT_SYSTEM_PROMPT = (
     "Tu es un assistant vocal pour un robot. "
     "Reponds toujours en francais, de maniere concise et naturelle. "
-    "Tu peux donner des ordres de mouvement au robot : "
-    "avancer, reculer, tourner a gauche, tourner a droite, stop. "
-    "Reponds en une ou deux phrases maximum."
+    "Quand l'utilisateur demande un mouvement (avancer, reculer, tourner, stop), "
+    "reponds UNIQUEMENT avec un objet JSON sur une seule ligne, sans texte autour, "
+    "dans ce format exact :\n"
+    '{"action": "move(\'forward\', 1, 0)", "response": "OK"}\n'
+    "Actions : move('forward', v, 0), move('backward', v, 0), "
+    "move('left', 0, v), move('right', 0, v), move('stop', 0, 0). "
+    "Le champ 'response' contient ta reponse en francais. "
+    "Pour les autres questions, reponds normalement en francais, "
+    "en une ou deux phrases maximum."
 )
 
 # URLs des modeles sherpa-onnx francais a telecharger (sur le robot)
@@ -892,7 +919,8 @@ class OllamaAPI:
              max_tokens=DEFAULT_MAX_TOKENS, model=None):
         """Conversation complete. Retourne le texte de la reponse."""
         if FORCE_FRENCH_PROMPT:
-            sp = DEFAULT_SYSTEM_PROMPT
+            base_sp = system if system else self.system_prompt
+            sp = FRENCH_SYSTEM_PREFIX + (base_sp or "")
         else:
             sp = system if system is not None else self.system_prompt
         fm = []
@@ -943,7 +971,8 @@ class OllamaAPI:
         """Chat en streaming : callback(delta) appele pour chaque morceau."""
         import urllib.request
         if FORCE_FRENCH_PROMPT:
-            sp = DEFAULT_SYSTEM_PROMPT
+            base_sp = system if system else self.system_prompt
+            sp = FRENCH_SYSTEM_PREFIX + (base_sp or "")
         else:
             sp = system if system is not None else self.system_prompt
         fm = []

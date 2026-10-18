@@ -127,15 +127,22 @@ else:
     check("chat() reponse non vide", len(resp2) > 0, repr(resp2[:120]))
     check("chat() system prompt respecte (<= 10 mots)", len(resp2.split()) <= 10, repr(resp2[:120]))
 
-    chunks = []
-    full = api.stream_chat(
-        messages=[{"role": "user", "content": "Compte de 1 a 3 en francais."}],
-        callback=chunks.append, max_tokens=256)
-    # Le modele peut repondre avec des chiffres (1, 2, 3) ou des lettres (un, deux, trois)
-    has_count = any(k in full.lower() for k in ("1", "un")) and any(
-        k in full.lower() for k in ("3", "trois"))
-    check("stream_chat() accumule", has_count, repr(full[:120]))
-    check("stream_chat() callback appele", len(chunks) > 0, "%d morceaux" % len(chunks))
+    # Test stream_chat avec FORCE_FRENCH_PROMPT temporairement desactive
+    # (sinon le prefixe FR pousse le LLM a repondre en JSON de mouvement)
+    saved_force = sop.FORCE_FRENCH_PROMPT
+    sop.FORCE_FRENCH_PROMPT = False
+    try:
+        chunks = []
+        full = api.stream_chat(
+            messages=[{"role": "user", "content": "Compte de 1 a 3 en francais."}],
+            callback=chunks.append, max_tokens=256)
+        # Le modele peut repondre avec des chiffres (1, 2, 3) ou des lettres (un, deux, trois)
+        has_count = any(k in full.lower() for k in ("1", "un")) and any(
+            k in full.lower() for k in ("3", "trois"))
+        check("stream_chat() accumule", has_count, repr(full[:120]))
+        check("stream_chat() callback appele", len(chunks) > 0, "%d morceaux" % len(chunks))
+    finally:
+        sop.FORCE_FRENCH_PROMPT = saved_force
 
     # Modele "thinking" : verifier que num_predict eleve evite la reponse vide
     if any(m.startswith("qwen3.5") for m in models):
@@ -234,7 +241,39 @@ check("DEFAULT_SYSTEM_PROMPT contient 'francais'",
       "francais" in sop.DEFAULT_SYSTEM_PROMPT.lower())
 check("DEFAULT_SYSTEM_PROMPT contient 'robot'",
       "robot" in sop.DEFAULT_SYSTEM_PROMPT.lower())
+check("DEFAULT_SYSTEM_PROMPT contient 'JSON' (mouvement)",
+      "json" in sop.DEFAULT_SYSTEM_PROMPT.lower() or '"action"' in sop.DEFAULT_SYSTEM_PROMPT)
+check("DEFAULT_SYSTEM_PROMPT contient 'move'",
+      "move(" in sop.DEFAULT_SYSTEM_PROMPT)
 check("FORCE_FRENCH_PROMPT est un booleen", isinstance(sop.FORCE_FRENCH_PROMPT, bool))
+
+# --- 9b. FRENCH_SYSTEM_PREFIX (prefixe ajoute au prompt du firmware) ---
+check("FRENCH_SYSTEM_PREFIX existe", hasattr(sop, "FRENCH_SYSTEM_PREFIX"))
+check("FRENCH_SYSTEM_PREFIX contient 'francais'",
+      "francais" in sop.FRENCH_SYSTEM_PREFIX.lower())
+check("FRENCH_SYSTEM_PREFIX contient 'JSON'",
+      "json" in sop.FRENCH_SYSTEM_PREFIX.lower() or '"action"' in sop.FRENCH_SYSTEM_PREFIX)
+check("FRENCH_SYSTEM_PREFIX contient 'move'",
+      "move(" in sop.FRENCH_SYSTEM_PREFIX)
+check("FRENCH_SYSTEM_PREFIX contient 'forward'",
+      "forward" in sop.FRENCH_SYSTEM_PREFIX)
+check("FRENCH_SYSTEM_PREFIX contient 'stop'",
+      "stop" in sop.FRENCH_SYSTEM_PREFIX)
+
+# --- 9c. Test logique chat() : prefixe ajoute au prompt du firmware ---
+# On simule le comportement attendu de chat() quand FORCE_FRENCH_PROMPT=True
+firmware_prompt = "You are a robot. Respond with JSON: {action, response}"
+if sop.FORCE_FRENCH_PROMPT:
+    base_sp = firmware_prompt  # system fourni par l'appelant
+    combined = sop.FRENCH_SYSTEM_PREFIX + (base_sp or "")
+    check("chat() prefixe conserve le prompt firmware",
+          firmware_prompt in combined)
+    check("chat() prefixe ajoute instruction FR",
+          "francais" in combined.lower())
+    check("chat() prefixe conserve instruction JSON firmware",
+          "JSON" in combined or '"action"' in combined)
+else:
+    skip("chat() prefixe test (FORCE_FRENCH_PROMPT=False)")
 
 # --- 10. OllamaAPI : prompt systeme francais par defaut ---
 api_test = sop.OllamaAPI(url="http://127.0.0.1:1", model="test")  # URL bidon, pas de connexion

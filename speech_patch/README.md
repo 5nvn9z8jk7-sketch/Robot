@@ -111,7 +111,25 @@ français trouvés (section [fr]).
 | `OLLAMA_MODEL` | `qwen3.5:9b` | Modèle LLM par défaut |
 | `SHERPA_DIR` | `~/third_party/sherpa-onnx` | Dossier des modèles sherpa-onnx |
 | `SPEECH_LANG` | `fr` | Langue par défaut (fr ou en) |
-| `SPEECH_FORCE_FR` | `1` | Forcer le prompt système français même si le firmware en fournit un autre |
+| `SPEECH_FORCE_FR` | `1` | Ajouter un préfixe FR devant le prompt système du firmware (préserve les instructions JSON de mouvement) |
+
+### Comment fonctionne le préfixe FR (SPEECH_FORCE_FR=1)
+
+Quand `SPEECH_FORCE_FR=1`, le wrapper **ne remplace pas** le prompt système du firmware.
+Il **ajoute un préfixe** (`FRENCH_SYSTEM_PREFIX`) devant celui-ci :
+
+```
+FRENCH_SYSTEM_PREFIX + prompt_systeme_du_firmware
+```
+
+Le préfixe :
+- Force le LLM à répondre en français
+- Rappelle le format JSON attendu pour les mouvements (`llm_control_move`)
+- Préserve les instructions spécifiques du firmware (ex: format JSON, contexte)
+
+**Pourquoi pas un remplacement ?** Le nœud `llm_control_move` du firmware envoie
+un prompt système avec les instructions JSON pour les mouvements. Si on le remplaçait,
+le LLM ne générait plus de JSON → le robot ne bougeait pas. (Bug corrigé le 18/10.)
 
 ## Côté PC : rendre Ollama joignable depuis le robot
 
