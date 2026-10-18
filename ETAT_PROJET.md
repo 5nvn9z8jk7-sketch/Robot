@@ -424,3 +424,103 @@ Dernier commit : `d579013` (17/10 ~22h00)
 5. Vérifier `/vocal_detect/wakeup` (signal de réveil peut-être nécessaire)
 6. Une fois les mouvements OK → corriger l'ASR pour le FR dans le fichier de launch
 7. Puis passer au projet toy_sorter
+
+---
+
+# SESSION 18/10/2026 14h45 — Pont vocal fonctionnel + outillage reprise
+
+## État actuel (vérifié 14:46)
+
+```
+[OK] Robot 192.168.1.30 repond
+[OK] PC repond
+[OK] Ollama actif
+[OK] rosbridge actif (28 noeuds)
+```
+
+## Pont vocal fonctionnel
+
+Le robot répond aux commandes françaises SANS déploiement du speech_patch :
+
+```bash
+python3 speech_patch/voice_bridge.py "Avance"
+python3 speech_patch/voice_bridge.py --interactive
+```
+
+## Outillage créé cette session
+
+| Fichier | Description |
+|---------|-------------|
+| `speech_patch/voice_bridge.py` | Pont LLM -> rosbridge -> mouvement |
+| `speech_patch/robot_ssh.py` | Helper SSH pour contrôler le robot |
+| `speech_patch/setup_ssh_access.sh` | Configure l'accès SSH (à lancer sur robot) |
+| `speech_patch/check_and_resume.py` | Diagnostic auto + reprise après recharge |
+| `ETAT_PROJET_SESSION.md` | Doc session détaillée |
+
+## Comment me donner la main sur le robot (SSH)
+
+### Option A : Clé SSH (recommandée, une seule fois)
+
+1. **Sur le robot** (via NoMachine terminal), copier-coller :
+
+```bash
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+curl -s https://raw.githubusercontent.com/5nvn9z8jk7-sketch/Robot/main/speech_patch/setup_ssh_access.sh | bash
+# OU transférer setup_ssh_access.sh et lancer: bash setup_ssh_access.sh
+```
+
+2. **Depuis le PC**, je peux alors me connecter :
+
+```bash
+ssh -i /c/Users/bloiz/.ssh/id_robot ubuntu@192.168.1.30
+# OU utiliser le helper:
+python3 speech_patch/robot_ssh.py "commande"
+python3 speech_patch/robot_ssh.py --deploy   # Déploie le speech_patch
+```
+
+### Option B : Mot de passe SSH (temporaire)
+
+Me donner le mot de passe SSH du robot (user `ubuntu`), je peux utiliser paramiko.
+
+## Reprise après déconnexion batterie
+
+Si le robot s'éteint (batterie vide), après recharge :
+
+```bash
+# 1. Vérifier que tout est OK (30 secondes)
+python3 speech_patch/check_and_resume.py --quick
+
+# 2. Si tout est vert, contrôler le robot:
+python3 speech_patch/voice_bridge.py "Avance"
+
+# 3. Diagnostic complet si problème:
+python3 speech_patch/check_and_resume.py
+```
+
+## Commandes essentielles
+
+```bash
+# Diagnostic rapide
+python3 speech_patch/check_and_resume.py --quick
+
+# Test vocal
+python3 speech_patch/voice_bridge.py "Avance"
+
+# Mode interactif (taper les commandes)
+python3 speech_patch/voice_bridge.py --interactive
+
+# Contrôle manuel rosbridge (sans LLM)
+python3 -c "
+import websocket, json, time
+ws = websocket.create_connection('ws://192.168.1.30:9090')
+ws.send(json.dumps({'op':'publish','topic':'/controller/cmd_vel','msg':{'linear':{'x':0.3,'y':0,'z':0},'angular':{'x':0,'y':0,'z':0}}}))
+time.sleep(2)
+ws.send(json.dumps({'op':'publish','topic':'/controller/cmd_vel','msg':{'linear':{'x':0,'y':0,'z':0},'angular':{'x':0,'y':0,'z':0}}}))
+"
+```
+
+## Commit actuel
+
+`0ab743c` — feat: pont vocal LLM -> rosbridge (18/10 14h30)
+
+Prochain commit prévu : outillage SSH + check_and_resume
