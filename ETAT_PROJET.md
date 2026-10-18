@@ -606,15 +606,100 @@ python3 speech_patch/robot_ssh.py --deploy
 
 ## État batterie
 
-⚠️ Pas de message sur `/ros_robot_controller/battery` — vérifier le branchement batterie.
+✅ **Batterie OK** : `/ros_robot_controller/battery` (UInt16, en mV) publie ~**10900 mV = 10.9V**
+- 3S LiPo : 10.9V = ~3.63V/cell = **~30-40% restant**
+- À recharger bientôt, mais le robot fonctionne encore
+
+## ✅ SESSION 18/10 20:30-20:45 — Micro réel + ASR FR + chaîne complète FONCTIONNELS
+
+### 🎉 Résultat : la chaîne complète marche !
+
+```
+Parler au robot → ASR FR (sherpa-onnx) → LLM (Ollama qwen3.5:9b)
+  → TTS FR (vits-piper) → Mouvement du robot
+```
+
+Test réel effectué le 18/10 à 20:42 :
+- ASR a reconnu : "D", "RÉPONDIT"
+- LLM a répondu : `{"action": ["move('forward', 0, 2)", "move('turn_left', 0, 1)", "move('stop', 0, 1)"]}'
+- TTS a parlé : "Acknowledged, executing immediately!"
+- **Robot a bougé** : AVANCE (v=0.20 m/s) puis GAUCHE (rot=1.0 rad/s)
+
+### 🔧 Problèmes résolus
+
+| Problème | Cause | Solution |
+|----------|-------|----------|
+| `vocal_detect` ne capte rien | Mauvais device audio (default=37 au lieu de USB=0) | Nouveau nœud `simple_asr_node.py` avec device=0 |
+| Micro USB incompatible 16kHz | Le mic ne supporte que 48kHz | Capture 48kHz stereo → downmix mono → resample 16kHz |
+| Transcription ASR vide | Mauvais pattern sherpa-onnx 1.12.x | `while recognizer.is_ready(stream): decode_stream(stream)` |
+| `get_result()` retourne objet | API changée en 1.12.14 | `recognizer.get_result(stream)` retourne `str` directement |
+| `vocal_detect` hardware incompatible | WonderEchoPro = serial, pas USB audio | Remplacé par `simple_asr_node.py` |
+
+### 📁 Nouveau fichier : `speech_patch/simple_asr_node.py`
+
+Nœud ROS2 autonome qui remplace `vocal_detect` :
+- Capture audio USB (device 0) à 48kHz stereo
+- Downmix mono + resample 16kHz (scipy)
+- VAD par énergie (seuil 200)
+- ASR sherpa-onnx FR (streaming zipformer)
+- Publie sur `/vocal_detect/asr_result` (String) et `/vocal_detect/wakeup` (Bool)
+
+Lancement sur le robot :
+```bash
+# Sur le robot (déjà déployé) :
+nohup bash ~/start_simple_asr.sh > ~/simple_asr.log 2>&1 &
+```
+
+### 📁 Nouveau fichier : `speech_patch/monitor_asr.py`
+
+Monitoring rosbridge (depuis le PC) pour voir ASR/LLM/TTS/Move/Battery en temps réel :
+```bash
+python3 speech_patch/monitor_asr.py 60   # 60 secondes
+```
+
+### 🧪 Tests sherpa-onnx 1.12.14 (référence)
+
+```python
+# Pattern correct pour streaming :
+stream = recognizer.create_stream()
+stream.accept_waveform(16000, audio)
+stream.input_finished()
+while recognizer.is_ready(stream):
+    recognizer.decode_stream(stream)
+text = recognizer.get_result(stream)  # str directement
+```
+
+Fichiers test WAV → transcription OK :
+- `common_voice_fr_19364697.wav` → "CE SITE CONTIENT QUATRE TOMBEAUX..."
+- `common_voice_fr_19738183.wav` → "CE DERNIER ÉVOLUE TOUT AU LONG DE L'HISTOIRE..."
+
+### 📊 Architecture finale
+
+```
+┌─────────────┐     ┌──────────────┐     ┌─────────────┐
+│  Micro USB   │────→│ simple_asr   │────→│ /vocal_detect│
+│  (48kHz)     │     │  (ASR FR)    │     │  /asr_result │
+└─────────────┘     └──────────────┘     └──────┬──────┘
+                                                  │
+┌─────────────┐     ┌──────────────┐     ┌──────▼──────┐
+│  Moteurs     │←────│ llm_control  │←────│ agent_proc  │
+│  (cmd_vel)   │     │  (mouvement) │     │  (LLM PC)   │
+└─────────────┘     └──────────────┘     └──────┬──────┘
+                                                  │
+                                           ┌──────▼──────┐
+                                           │  tts_node   │
+                                           │  (TTS FR)   │
+                                           └─────────────┘
+```
 
 ## Prochaines étapes
 
-1. ⬜ Tester avec le vrai micro (parler au robot)
-2. ⬜ Vérifier la batterie
+1. ✅ Tester avec le vrai micro (parler au robot) — **FAIT, chaîne complète OK**
+2. ✅ Vérifier la batterie — **FAIT, 10.9V (~30-40%)**
 3. ⬜ Corriger `ros_robot_controller` (erreur série `校验失败`)
 4. ⬜ Passer au projet toy_sorter
+5. ⬜ Améliorer la qualité ASR (le LLM répond en anglais, affiner le prompt FR)
 
 ---
 
-**Commit actuel** : en attente (mise à jour ETAT_PROJET)
+**Commit actuel** : simple_asr_node + monitor + doc session 18/10 20:45
