@@ -524,3 +524,97 @@ ws.send(json.dumps({'op':'publish','topic':'/controller/cmd_vel','msg':{'linear'
 `0ab743c` — feat: pont vocal LLM -> rosbridge (18/10 14h30)
 
 Prochain commit prévu : outillage SSH + check_and_resume
+
+---
+
+# 🎉 SESSION 18/10/2026 15h15 — SUCCÈS TOTAL : Robot répond en français et bouge !
+
+## Chaîne vocale complète FONCTIONNELLE
+
+```
+Micro → ASR FR (zipformer) → LLM (qwen3.5:9b, prompt FR) → JSON action
+      → TTS FR (vits-piper siwis) → Haut-parleur
+      → /controller/cmd_vel → MOTEURS → Robot bouge !
+```
+
+## Tests réussis (18/10 15h15)
+
+| Commande | LLM réponse | TTS | Mouvement |
+|----------|-------------|-----|-----------|
+| "Avance" | `move('forward', 1, 0)` + "J'avance" | "J'avance" | ✅ Avance 0.2 m/s |
+| "Tourne à gauche" | `move('left', 0, 0)` + "J'arrête" | "J'arrête." | ✅ (action left) |
+| TTS direct | - | "Bonjour, je suis le robot ROSOrin" | - |
+
+## Déploiement effectué
+
+1. ✅ Clé SSH configurée (`~/.ssh/id_robot`)
+2. ✅ Speech patch v2 (avec support FR) déployé
+3. ✅ Modèles FR installés (ASR zipformer fr + TTS vits-piper fr)
+4. ✅ `.bashrc` nettoyé (variables dédupliquées)
+5. ✅ Packages ROS2 recompilés (`colcon build`)
+6. ✅ Démo `llm_control_move.launch.py` lancée avec succès
+
+## Configuration requise pour lancer la démo
+
+```bash
+ssh robot
+bash -c '
+source ~/ros2_ws/.typerc          # Config firmware (MACHINE_TYPE, etc.)
+source /opt/ros/humble/setup.bash
+source ~/third_party/third_party_ws/install/setup.bash
+source ~/ros2_ws/install/setup.bash
+
+# Variables pour notre usage (need_compile=False vient du firmware)
+export OLLAMA_URL=http://192.168.1.20:11434
+export SPEECH_LANG=fr
+export SPEECH_FORCE_FR=1
+
+# Lancer la démo
+ros2 launch large_models_examples llm_control_move.launch.py
+'
+```
+
+## Nœuds actifs (démo LLM)
+
+| Nœud | Rôle | Statut |
+|------|------|--------|
+| `/vocal_detect` | ASR (reconnaissance vocale FR) | ✅ ACTIF |
+| `/agent_process` | LLM (Ollama, prompt FR) | ✅ ACTIF |
+| `/tts_node` | TTS (voix FR) | ✅ ACTIF |
+| `/llm_control_move` | Parse JSON → mouvement | ✅ ACTIF |
+
+## Topics clés
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| `/vocal_detect/asr_result` | String | Texte reconnu (ASR) |
+| `/vocal_detect/wakeup` | Bool | Signal de réveil |
+| `/agent_process/result` | String | Réponse LLM (JSON) |
+| `/tts_node/tts_text` | String | Texte à dire (TTS) |
+| `/controller/cmd_vel` | Twist | Commandes mouvement |
+
+## Accès SSH (configuré)
+
+```bash
+# Connexion directe
+ssh robot "commande"
+
+# Ou avec le helper
+python3 speech_patch/robot_ssh.py "commande"
+python3 speech_patch/robot_ssh.py --deploy
+```
+
+## État batterie
+
+⚠️ Pas de message sur `/ros_robot_controller/battery` — vérifier le branchement batterie.
+
+## Prochaines étapes
+
+1. ⬜ Tester avec le vrai micro (parler au robot)
+2. ⬜ Vérifier la batterie
+3. ⬜ Corriger `ros_robot_controller` (erreur série `校验失败`)
+4. ⬜ Passer au projet toy_sorter
+
+---
+
+**Commit actuel** : en attente (mise à jour ETAT_PROJET)
