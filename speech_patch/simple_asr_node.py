@@ -29,7 +29,7 @@ RECORD_RATE = 48000    # rate native du micro USB
 TARGET_RATE = 16000    # rate attendu par sherpa-onnx
 DEVICE_INDEX = 0       # USB PnP Audio Device
 CHUNK_DURATION = 0.5   # secondes par chunk
-ENERGY_THRESHOLD = 200  # seuil VAD (abaisse, le mic USB a des niveaux bas)
+ENERGY_THRESHOLD = 100  # seuil VAD (abaisse, le mic USB a des niveaux bas)
 SILENCE_CHUNKS = 4      # ~2s de silence = fin de phrase
 MAX_CHUNKS = 40         # ~20s max par phrase
 
