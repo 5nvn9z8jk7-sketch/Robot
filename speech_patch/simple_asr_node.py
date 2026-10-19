@@ -29,9 +29,9 @@ RECORD_RATE = 48000    # rate native du micro USB
 TARGET_RATE = 16000    # rate attendu par sherpa-onnx
 DEVICE_INDEX = 0       # USB PnP Audio Device
 CHUNK_DURATION = 0.5   # secondes par chunk
-ENERGY_THRESHOLD = 50  # seuil VAD (gain mic 100%, micro USB faible)
+ENERGY_THRESHOLD = 300  # seuil VAD (bruit de fond ~160, parole >500)
 SILENCE_CHUNKS = 4      # ~2s de silence = fin de phrase
-MAX_CHUNKS = 40         # ~20s max par phrase
+MAX_CHUNKS = 24         # ~12s max par phrase
 
 
 class SimpleASRNode(Node):
