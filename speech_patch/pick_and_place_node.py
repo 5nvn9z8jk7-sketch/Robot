@@ -63,6 +63,8 @@ class PickAndPlaceNode(Node):
         self._busy = False
         self._abort = False
         self._camera_info_logged = False
+        self._depth_frames = 0
+        self._color_frames = 0
 
         self.cmd_vel_pub = self.create_publisher(Twist, '/controller/cmd_vel', 1)
         self.tts_pub = self.create_publisher(String, '/tts_node/tts_text', 1)
@@ -105,12 +107,17 @@ class PickAndPlaceNode(Node):
     def _color_callback(self, msg):
         with self._lock:
             self._latest_color_info = msg
+            self._color_frames += 1
 
     def _depth_callback(self, msg):
         try:
             depth = np.frombuffer(msg.data, dtype=np.uint16).reshape(msg.height, msg.width)
             with self._lock:
                 self._latest_depth_image = depth.copy()
+                self._depth_frames += 1
+                if self._depth_frames % 30 == 1:
+                    valid = depth[depth > 0]
+                    self.get_logger().info(f'Depth frame #{self._depth_frames}: {msg.width}x{msg.height}, valid={len(valid)}/{depth.size}')
         except Exception as e:
             self.get_logger().error(f'Erreur decodage depth: {e}')
 
@@ -212,6 +219,7 @@ class PickAndPlaceNode(Node):
             self.get_logger().info(f'Cube detecte a pixel ({cube.x}, {cube.y})')
 
             depth_mm = self._get_depth_at(cube.x, cube.y)
+            self.get_logger().info(f'Depth lookup at ({cube.x},{cube.y}): {depth_mm} mm (frames: depth={self._depth_frames}, color={self._color_frames})')
             if depth_mm is None:
                 self._say("Je vois le cube mais je ne peux pas evaluer la distance.")
                 return

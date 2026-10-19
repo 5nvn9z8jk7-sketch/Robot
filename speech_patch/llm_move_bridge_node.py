@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 # encoding: utf-8
 """
-llm_move_bridge_node v2 — Pont ASR -> mouvement fiable + LLM pour conversation.
+llm_move_bridge_node v3 — Pont ASR -> mouvement fiable + LLM pour conversation.
 
 Architecture :
   /vocal_detect/asr_result (ASR)
        |
        +---> mots-cles de mouvement -> execution immediate + TTS confirmation
        |
+       +---> salutations -> TTS direct
+       |
+       +---> commandes pick_and_place -> IGNOREES (gerees par pick_and_place_node)
+       |
        +---> agent_process (LLM) -> reponse conversationnelle -> TTS
-
-  /agent_process/result (LLM) -> TTS uniquement (pas de mouvement)
+            (mais pas si la derniere commande etait pick_and_place)
 
 Souscrit :
   /vocal_detect/asr_result  (std_msgs/String) — texte ASR
@@ -32,46 +35,46 @@ from geometry_msgs.msg import Twist
 
 DEFAULT_LINEAR_SPEED = 0.2   # m/s
 DEFAULT_ANGULAR_SPEED = 1.0  # rad/s
-DEFAULT_DURATION = 2.0       # secondes (quand ni distance ni duree)
+DEFAULT_DURATION = 2.0       # secondes
 
-# Mots-cles ASR -> direction. Ordre = priorite (stop avant le reste).
+# Mots-cles ASR -> direction
 KEYWORD_ACTIONS = [
-    (['stop', 'arrête', 'arrete', 'arrêter', 'stoppe', 'stopper', 'pause', 'halt'], 'stop'),
-    (['recule', 'reculer', 'arrière', 'arriere', 'derrière', 'derriere', 'back', 'recule'], 'backward'),
+    (['stop', 'arrete', 'arreter', 'stoppe', 'stopper', 'pause', 'halt'], 'stop'),
+    (['recule', 'reculer', 'arriere', 'derriere', 'back'], 'backward'),
     (['avance', 'avancer', 'avant', 'devant', 'forward', 'marche', 'vas-y', 'go'], 'forward'),
     (['gauche', 'left'], 'turn_left'),
     (['droite', 'right'], 'turn_right'),
 ]
 
-# Mot de reveil obligatoire avant une commande (filtre le bruit ambiant)
 WAKE_WORDS = ['robot', 'robo', 'hiwonder', 'rosorin', 'ros orin', 'hey robot', 'ok robot', 'hey robo']
 
-# Reponses TTS par direction
 TTS_CONFIRM = {
     'forward': "J'avance",
     'backward': "Je recule",
-    'turn_left': "Je tourne à gauche",
-    'turn_right': "Je tourne à droite",
-    'stop': "J'arrête",
+    'turn_left': "Je tourne a gauche",
+    'turn_right': "Je tourne a droite",
+    'stop': "J'arrete",
 }
 
-# Salutations -> reponse TTS directe (sans passer par le LLM oriente mouvement)
 GREETINGS = {
     'bonjour': "Bonjour ! Je suis le robot ROSOrin. Que puis-je faire pour toi ?",
-    'salut': "Salut ! Comment ça va ?",
+    'salut': "Salut ! Comment ca va ?",
     'hello': "Hello ! I'm here.",
-    'hiwonder': "Oui ? Je suis le robot Hiwonder, prêt à t'aider.",
-    'hey': "Hey ! Je t'écoute.",
+    'hiwonder': "Oui ? Je suis le robot Hiwonder, pret a t'aider.",
+    'hey': "Hey ! Je t'ecoute.",
     'coucou': "Coucou !",
-    'qui es-tu': "Je suis le robot ROSOrin, un robot intelligent qui peut avancer, reculer et tourner sur commande vocale.",
-    'qui es tu': "Je suis le robot ROSOrin, un robot intelligent qui peut avancer, reculer et tourner sur commande vocale.",
-    'comment ça va': "Ça va très bien, merci ! Et toi ?",
-    'comment ca va': "Ça va très bien, merci ! Et toi ?",
+    'qui es-tu': "Je suis le robot ROSOrin, un robot intelligent.",
+    'qui es tu': "Je suis le robot ROSOrin, un robot intelligent.",
+    'comment ca va': "Ca va tres bien, merci ! Et toi ?",
+    'comment ça va': "Ca va tres bien, merci ! Et toi ?",
     'merci': "De rien ! Avec plaisir.",
 }
 
-# Mots-cles de salutation (pour detection)
-GREETING_KEYWORDS = list(GREETINGS.keys())
+# Mots-cles pick_and_place — ces commandes sont gerees par pick_and_place_node
+# Le bridge ne doit PAS les envoyer au LLM ni y reagir
+PAP_KEYWORDS = ['cube', 'objet', 'balle', 'block', 'bloc', 'cherche', 'chercher',
+                'trouve', 'trouver', 'va chercher', 'va ramasser', 'ramasse le', 'attrape le',
+                'attraper le', 'prends le', 'prendre le', 'saisis le']
 
 
 class LLMMoveBridge(Node):
@@ -83,6 +86,8 @@ class LLMMoveBridge(Node):
         self._moving = False
         self._last_move_time = 0.0
         self._llm_response = ''
+        self._last_asr_text = ''
+        self._last_asr_is_pap = False
 
         self.cmd_vel_pub = self.create_publisher(Twist, '/controller/cmd_vel', 1)
         self.tts_text_pub = self.create_publisher(String, '/tts_node/tts_text', 1)
@@ -97,21 +102,34 @@ class LLMMoveBridge(Node):
         self._thread = threading.Thread(target=self._process_loop, daemon=True)
         self._thread.start()
 
-        self.get_logger().info('llm_move_bridge v2 pret — commandes vocales directes + LLM conversation')
-
-    # --- Callbacks ---
+        self.get_logger().info('llm_move_bridge v3 pret — commandes vocales directes + LLM conversation')
 
     def _asr_cb(self, msg):
-        """Traite le texte ASR : mouvement par mots-cles si detecte."""
         text = msg.data.strip()
         if not text:
             return
         self.get_logger().info(f'ASR: "{text}"')
+
+        text_lower = text.lower()
+
+        # Detecter si c'est une commande pick_and_place
+        is_pap = any(kw in text_lower for kw in PAP_KEYWORDS)
+        with self._lock:
+            self._last_asr_text = text_lower
+            self._last_asr_is_pap = is_pap
+
+        if is_pap:
+            self.get_logger().info('Commande pick_and_place detectee — ignoree par le bridge (geree par pick_and_place_node)')
+            return  # Ne pas traiter comme mouvement ni conversation
+
         self._handle_asr_text(text)
 
     def _llm_cb(self, msg):
-        """Recoit la reponse LLM — TTS uniquement (pas de mouvement)."""
         with self._lock:
+            # Ne pas enregistrer la reponse LLM si la derniere commande etait pick_and_place
+            if self._last_asr_is_pap:
+                self.get_logger().info('Reponse LLM ignoree (commande pick_and_place en cours)')
+                return
             self._llm_response = msg.data
 
     def _wakeup_cb(self, msg):
@@ -120,26 +138,19 @@ class LLMMoveBridge(Node):
                 self.get_logger().info('wakeup interrupt')
                 self.interrupt = bool(msg.data)
 
-    # --- Traitement ASR par mots-cles ---
-
     def _detect_command(self, text):
-        """Detecte une commande de mouvement dans le texte ASR.
-        Retourne (direction, distance, duration) ou None."""
         text_lower = text.lower()
 
-        # Extraire duree (ex: "2 secondes", "3 sec")
         duration = 0.0
         m = re.search(r'(\d+(?:[.,]\d+)?)\s*(?:seconde|secondes|sec|s)\b', text_lower)
         if m:
             duration = float(m.group(1).replace(',', '.'))
 
-        # Extraire distance (ex: "1 metre", "2 m")
         distance = 0.0
-        m = re.search(r'(\d+(?:[.,]\d+)?)\s*(?:mètre|metre|mètres|metres|m)\b', text_lower)
+        m = re.search(r'(\d+(?:[.,]\d+)?)\s*(?:metre|metres|metres|m)\b', text_lower)
         if m:
             distance = float(m.group(1).replace(',', '.'))
 
-        # Detecter direction par mots-cles
         for keywords, direction in KEYWORD_ACTIONS:
             for kw in keywords:
                 if kw in text_lower:
@@ -148,34 +159,31 @@ class LLMMoveBridge(Node):
         return None
 
     def _handle_asr_text(self, text):
-        """Traite le texte ASR : salutation -> TTS direct, commande -> mouvement."""
         text_lower = text.lower()
 
-        # 1. Verifier si c'est une salutation
+        # 1. Salutations -> TTS direct
         for keyword, response in GREETINGS.items():
             if keyword in text_lower:
                 self.get_logger().info(f'Salutation detectee: "{keyword}"')
                 msg = String()
                 msg.data = response
                 self.tts_text_pub.publish(msg)
-                return  # Ne pas traiter comme commande
+                return
 
-        # 2. Verifier si c'est une commande de mouvement
+        # 2. Commande de mouvement
         cmd = self._detect_command(text)
         if cmd is None:
-            return  # Pas une commande -> laisse le LLM gerer (conversation)
+            return  # Pas une commande -> laisse le LLM gerer
 
         direction, distance, duration = cmd
         self.get_logger().info(
             f'Commande detectee: {direction} (dist={distance}, dur={duration})')
 
-        # TTS confirmation
         confirm = TTS_CONFIRM.get(direction, 'OK')
         msg = String()
         msg.data = confirm
         self.tts_text_pub.publish(msg)
 
-        # Executer le mouvement dans un thread separe
         threading.Thread(
             target=self._execute_movement,
             args=(direction, distance, duration),
@@ -183,7 +191,6 @@ class LLMMoveBridge(Node):
         ).start()
 
     def _execute_movement(self, direction, distance, duration):
-        """Execute un mouvement avec duree/distance."""
         with self._lock:
             self._moving = True
             self._last_move_time = time.time()
@@ -194,7 +201,6 @@ class LLMMoveBridge(Node):
                 self.get_logger().info('Stop envoye')
                 return
 
-            # Calculer duree finale
             if distance > 0:
                 speed = DEFAULT_ANGULAR_SPEED if 'turn' in direction else DEFAULT_LINEAR_SPEED
                 final_duration = distance / speed
@@ -218,7 +224,6 @@ class LLMMoveBridge(Node):
 
             self.cmd_vel_pub.publish(twist)
 
-            # Attendre la duree (avec verification d'interruption)
             start = time.time()
             while time.time() - start < final_duration:
                 with self._lock:
@@ -234,10 +239,7 @@ class LLMMoveBridge(Node):
                 self._moving = False
             self.get_logger().info('Mouvement termine, stop envoye')
 
-    # --- Traitement reponse LLM (TTS only) ---
-
     def _process_loop(self):
-        """Boucle de traitement des reponses LLM pour le TTS."""
         while rclpy.ok():
             with self._lock:
                 response = self._llm_response
@@ -249,8 +251,6 @@ class LLMMoveBridge(Node):
             time.sleep(0.05)
 
     def _tts_from_llm(self, response_str):
-        """Extrait le texte de reponse du JSON LLM et le publie au TTS."""
-        # Si c'est du JSON, extraire le champ "response"
         start = response_str.find('{')
         if start >= 0:
             depth = 0
@@ -276,8 +276,6 @@ class LLMMoveBridge(Node):
             except Exception:
                 pass
 
-        # Pas de JSON ou pas de champ response — TTS du texte brut
-        # (mais seulement si ce n'est pas trop long)
         if len(response_str) < 200:
             self.get_logger().info(f'LLM TTS (brut): {response_str[:80]}')
             msg = String()
