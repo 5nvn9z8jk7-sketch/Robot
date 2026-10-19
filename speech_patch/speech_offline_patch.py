@@ -768,6 +768,12 @@ class OfflineRealTimeTTS:
             threading.Thread(target=self._synthesize_and_play,
                              args=(text,), daemon=True).start()
 
+    def tts(self, text, sid=None, blocking=True):
+        """Alias de say() pour compatibilite firmware (tts_node appelle .tts())."""
+        if sid is not None:
+            self.set_voice(sid)
+        self.say(text, blocking=blocking)
+
     def save_to_file(self, text, path):
         """Synthetise le texte et ecrit un fichier WAV 16 bits mono."""
         if not text or not text.strip() or not self._tts:
