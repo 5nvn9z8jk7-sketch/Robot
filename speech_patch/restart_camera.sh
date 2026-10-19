@@ -3,8 +3,7 @@ source /opt/ros/humble/setup.bash 2>/dev/null
 source ~/ros2_ws/install/setup.bash 2>/dev/null
 source ~/third_party/third_party_ws/install/setup.bash 2>/dev/null
 source ~/third_party/aurora_ws/install/setup.bash 2>/dev/null
-export DEPTH_CAMERA_TYPE=aurora
-export need_compile=True
+source ~/ros2_ws/.typerc 2>/dev/null
 
 # Kill all camera-related processes
 pkill -9 -f aurora930_node 2>/dev/null
