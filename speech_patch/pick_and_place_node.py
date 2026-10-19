@@ -27,7 +27,7 @@ ACTION_GROUPS_PATH = '/home/ubuntu/software/arm_pc/ActionGroups'
 
 LINEAR_SPEED = 0.15
 ANGULAR_SPEED = 0.8
-TARGET_DISTANCE = 0.35
+TARGET_DISTANCE = 0.15
 
 DEFAULT_FX = 423.376
 DEFAULT_FY = 424.174
@@ -37,7 +37,8 @@ DEFAULT_CY = 201.658
 MIN_DEPTH_MM = 100
 MAX_DEPTH_MM = 4000
 DETECT_TIMEOUT = 5.0
-ANGLE_DEADZONE = 0.05
+MIN_APPROACH = 0.15  # always drive at least 15cm if cube detected
+ANGLE_DEADZONE = 0.02
 
 TRIGGER_VERBS = ['attrape', 'attraper', 'ramasse', 'ramasser', 'prends', 'prendre',
                  'saisis', 'saisir', 'cherche', 'chercher', 'trouve', 'trouver',
@@ -260,14 +261,37 @@ class PickAndPlaceNode(Node):
 
             self.get_logger().info(f'Distance finale: {distance_m:.2f} m')
 
-            approach = distance_m - TARGET_DISTANCE
-            if approach > 0.05:
-                self._say("J'avance vers le cube.")
-                self._drive_forward(approach)
-                if self._abort:
-                    return
-            else:
-                self.get_logger().info('Deja assez proche')
+            # Two-phase approach: rough approach then fine approach
+            # Phase 1: get close (stop at 25cm from camera)
+            approach1 = max(distance_m - 0.25, MIN_APPROACH)
+            self.get_logger().info(f'Phase 1: avance de {approach1:.2f} m')
+            self._say("J'avance vers le cube.")
+            self._drive_forward(approach1)
+            if self._abort:
+                return
+
+            # Phase 2: re-center and fine approach (stop at 15cm)
+            time.sleep(0.5)
+            cube_fine = self._get_red_cube(timeout=2.0)
+            if cube_fine is not None:
+                d_fine = self._get_depth_at(cube_fine.x, cube_fine.y)
+                if d_fine is not None:
+                    dist_fine = d_fine / 1000.0
+                    angle_fine = math.atan2(cube_fine.x - self._cx, self._fx)
+                    self.get_logger().info(f'Phase 2: cube at {dist_fine:.2f}m, angle {math.degrees(angle_fine):.1f} deg')
+                    # Re-center
+                    if abs(angle_fine) > ANGLE_DEADZONE:
+                        self._turn_to(angle_fine)
+                        if self._abort:
+                            return
+                        time.sleep(0.3)
+                    # Fine approach
+                    approach2 = max(dist_fine - TARGET_DISTANCE, 0.05)
+                    if approach2 > 0.05:
+                        self.get_logger().info(f'Phase 2: avance de {approach2:.2f} m')
+                        self._drive_forward(approach2)
+                        if self._abort:
+                            return
 
             self._say("J'attrape le cube !")
             self.get_logger().info('Execution action voice_pick...')
