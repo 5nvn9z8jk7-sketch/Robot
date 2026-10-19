@@ -1,0 +1,23 @@
+[WS] Connecte a ws://192.168.1.30:9090
+[WS] Abonne: /vocal_detect/asr_result (ASR)
+[WS] Abonne: /vocal_detect/wakeup (WAKE)
+[WS] Abonne: /agent_process/result (LLM)
+[WS] Abonne: /tts_node/tts_text (TTS)
+[WS] Abonne: /tts_node/play_finish (TTS_DONE)
+[WS] Abonne: /controller/cmd_vel (MOVE)
+[WS] Abonne: /ros_robot_controller/battery (BATT)
+
+=======================================================
+  MONITORING ACTIF — parle au robot maintenant!
+  Duree: 60s — Ctrl+C pour arreter
+  Essaie: 'Avance', 'Recule', 'Tourne a gauche',
+         'Stop', 'Bonjour', 'Quelle heure est-il?'
+=======================================================
+
+[21:07:41] [WAKE] OUI
+[21:08:11] [WAKE] OUI
+
+[TIMER] 60s écoulées — arrêt du monitoring
+[WS] Ferme (code=None)
+
+[RESUME] 0 message(s) ASR recu(s)

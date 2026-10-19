@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 # encoding: utf-8
 """
-voice_pick_node — Contrôle vocal du bras pour attraper/déposer des objets.
+voice_pick_node â ContrÃ´le vocal du bras pour attraper/dÃ©poser des objets.
 
-Écoute /vocal_detect/asr_result (notre ASR) et exécute les actions
-de bras pré-enregistrées (voice_pick, voice_give, etc.) via ActionGroupController.
+Ãcoute /vocal_detect/asr_result (notre ASR) et exÃ©cute les actions
+de bras prÃ©-enregistrÃ©es (voice_pick, voice_give, etc.) via ActionGroupController.
 
 Commandes vocales :
   "attrape" / "prends" / "ramasse" / "pick"  -> action voice_pick
   "donne" / "donne moi" / "viens"           -> action voice_give
-  "lâche" / "pose" / "dépose" / "place"     -> action place_basket
+  "lÃ¢che" / "pose" / "dÃ©pose" / "place"     -> action place_basket
 """
 import re
 import threading
@@ -23,11 +23,11 @@ from servo_controller.action_group_controller import ActionGroupController
 
 ACTION_GROUPS_PATH = '/home/ubuntu/software/arm_pc/ActionGroups'
 
-# Mots-clés -> nom d'action
+# Mots-clÃ©s -> nom d'action
 PICK_KEYWORDS = ['attrape', 'attraper', 'prends', 'prendre', 'ramasse', 'ramasser',
                  'pick', 'saisis', 'saisir', 'cube', 'balle', 'objet']
 GIVE_KEYWORDS = ['donne', 'donnemoi', 'donne moi', 'pass', 'viens', 'give', 'tends']
-PLACE_KEYWORDS = ['pose', 'dépose', 'depose', 'lâche', 'lache', 'place', 'mets', 'met']
+PLACE_KEYWORDS = ['pose', 'dÃ©pose', 'depose', 'lÃ¢che', 'lache', 'place', 'mets', 'met']
 INIT_KEYWORDS = ['init', 'reset', 'position initiale', 'repos']
 
 
@@ -47,7 +47,7 @@ class VoicePickNode(Node):
         self._lock = threading.Lock()
         self._busy = False
 
-        self.get_logger().info('voice_pick_node pret — commandes: attrape, donne, pose')
+        self.get_logger().info('voice_pick_node pret â commandes: attrape, donne, pose')
 
     def _say(self, text):
         msg = String()
@@ -61,13 +61,18 @@ class VoicePickNode(Node):
 
         self.get_logger().info(f'ASR: "{text}"')
 
+        # Ignorer les commandes pick_and_place (gérées par pick_and_place_node)
+        if any(kw in text for kw in PAP_KEYWORDS):
+            self.get_logger().info('Commande pick_and_place détectée, ignorée par voice_pick_node')
+            return
+
         with self._lock:
             if self._busy:
                 self.get_logger().info('Deja en cours, ignore')
                 return
             self._busy = True
 
-        # Lancer l'action dans un thread séparé (non-bloquant)
+        # Lancer l'action dans un thread sÃ©parÃ© (non-bloquant)
         threading.Thread(target=self._handle_command, args=(text,), daemon=True).start()
 
     def _handle_command(self, text):
@@ -75,7 +80,7 @@ class VoicePickNode(Node):
             action = None
             response = None
 
-            # Détecter la commande
+            # DÃ©tecter la commande
             if any(kw in text for kw in PICK_KEYWORDS):
                 action = 'voice_pick'
                 response = "J'attrape l'objet !"
@@ -87,7 +92,7 @@ class VoicePickNode(Node):
                 response = "Je le pose."
             elif any(kw in text for kw in INIT_KEYWORDS):
                 action = 'init'
-                response = "Retour à la position initiale."
+                response = "Retour Ã  la position initiale."
 
             if action is None:
                 self.get_logger().info('Pas une commande de bras reconnue')
@@ -96,7 +101,7 @@ class VoicePickNode(Node):
             self.get_logger().info(f'Action: {action}')
             self._say(response)
 
-            # Exécuter l'action
+            # ExÃ©cuter l'action
             self.controller.run_action(action)
             self.get_logger().info(f'Action {action} terminee')
 
