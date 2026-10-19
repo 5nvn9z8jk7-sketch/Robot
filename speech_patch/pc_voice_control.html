@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Commande vocale Robot Hiwonder</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    max-width: 600px; margin: 40px auto; padding: 20px;
+    background: #1a1a2e; color: #eee; text-align: center;
+  }
+  h1 { font-size: 1.5em; margin-bottom: 10px; color: #16c784; }
+  .status {
+    padding: 10px 20px; border-radius: 8px; margin: 15px 0;
+    font-weight: bold; font-size: 0.95em;
+  }
+  .status.disconnected { background: #5c2a2a; color: #ff8888; }
+  .status.connecting { background: #5c4a2a; color: #ffcc66; }
+  .status.connected { background: #2a5c3a; color: #88ffaa; }
+  .status.listening { background: #2a4a6c; color: #66ccff; animation: pulse 1.5s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
+  button {
+    padding: 15px 40px; font-size: 1.2em; border: none; border-radius: 12px;
+    cursor: pointer; margin: 10px; transition: all 0.2s;
+  }
+  #btnStart { background: #16c784; color: #fff; }
+  #btnStart:hover { background: #12a06a; }
+  #btnStart:disabled { background: #444; cursor: not-allowed; }
+  #btnStop { background: #e74c3c; color: #fff; }
+  #btnStop:hover { background: #c0392b; }
+  #btnStop:disabled { background: #444; cursor: not-allowed; }
+  .log {
+    margin-top: 20px; padding: 15px; border-radius: 8px;
+    background: #0f0f1a; text-align: left; font-family: monospace;
+    font-size: 0.9em; max-height: 300px; overflow-y: auto;
+  }
+  .log .entry { padding: 4px 0; border-bottom: 1px solid #222; }
+  .log .time { color: #666; margin-right: 8px; }
+  .log .sent { color: #16c784; }
+  .log .error { color: #e74c3c; }
+  .log .info { color: #66ccff; }
+  .transcript {
+    margin-top: 15px; padding: 20px; border-radius: 8px;
+    background: #16213e; font-size: 1.3em; min-height: 60px;
+    color: #fff; font-weight: 500;
+  }
+  .transcript:empty::before { content: '...'; color: #555; }
+  .hint { color: #888; font-size: 0.85em; margin-top: 10px; }
+  input[type="text"] {
+    width: 80%; padding: 10px; border-radius: 8px; border: 1px solid #444;
+    background: #0f0f1a; color: #fff; font-size: 1em; margin-top: 10px;
+  }
+</style>
+</head>
+<body>
+<h1>Robot Hiwonder — Commande Vocale PC</h1>
+
+<div id="status" class="status disconnected">Déconnecté</div>
+
+<button id="btnStart" onclick="startListening()">Démarrer l'écoute</button>
+<button id="btnStop" onclick="stopListening()" disabled>Arrêter</button>
+
+<div class="transcript" id="transcript"></div>
+
+<div>
+  <input type="text" id="robotIp" value="192.168.1.30" placeholder="IP du robot">
+  <div class="hint">IP du robot (vérifie avec <code>ssh robot "hostname -I"</code>)</div>
+</div>
+
+<div class="hint" style="margin-top:15px">
+  Commandes reconnues : « attrape le cube rouge », « avance », « recule », « tourne », « stop »...<br>
+  Ouvre cette page dans <strong>Chrome</strong> ou <strong>Edge</strong>.
+</div>
+
+<div class="log" id="log"></div>
+
+<script>
+// --- Configuration ---
+const ROBOT_PORT = 9090;
+const TOPIC = '/vocal_detect/asr_result';
+
+let ws = null;
+let recognition = null;
+let isListening = false;
+
+// --- DOM ---
+const statusEl = document.getElementById('status');
+const transcriptEl = document.getElementById('transcript');
+const logEl = document.getElementById('log');
+const btnStart = document.getElementById('btnStart');
+const btnStop = document.getElementById('btnStop');
+const robotIpEl = document.getElementById('robotIp');
+
+function log(msg, type) {
+  type = type || 'info';
+  const time = new Date().toLocaleTimeString('fr-FR');
+  const entry = document.createElement('div');
+  entry.className = 'entry';
+  entry.innerHTML = '<span class="time">[' + time + ']</span><span class="' + type + '">' + msg + '</span>';
+  logEl.appendChild(entry);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setStatus(text, cls) {
+  statusEl.textContent = text;
+  statusEl.className = 'status ' + cls;
+}
+
+// --- WebSocket (rosbridge) ---
+function connectWebSocket() {
+  const ip = robotIpEl.value.trim();
+  const url = 'ws://' + ip + ':' + ROBOT_PORT;
+  log('Connexion à ' + url + '...', 'info');
+  setStatus('Connexion...', 'connecting');
+
+  ws = new WebSocket(url);
+
+  ws.onopen = function() {
+    log('Connecté au robot !', 'sent');
+    setStatus('Connecté au robot', 'connected');
+    btnStart.disabled = false;
+  };
+
+  ws.onerror = function(err) {
+    log('Erreur de connexion. Vérifie l\'IP du robot.', 'error');
+    setStatus('Erreur de connexion', 'disconnected');
+  };
+
+  ws.onclose = function() {
+    log('Déconnecté du robot.', 'error');
+    setStatus('Déconnecté', 'disconnected');
+    btnStart.disabled = true;
+    btnStop.disabled = true;
+    isListening = false;
+    if (recognition) recognition.stop();
+  };
+
+  ws.onmessage = function(event) {
+    // rosbridge messages — on ignore pour l'instant
+  };
+}
+
+function sendToRobot(text) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    log('Non connecté au robot !', 'error');
+    return;
+  }
+  const msg = {
+    op: 'publish',
+    topic: TOPIC,
+    msg: { data: text }
+  };
+  ws.send(JSON.stringify(msg));
+  log('Envoyé au robot : "' + text + '"', 'sent');
+}
+
+// --- Speech Recognition ---
+function initSpeechRecognition() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) {
+    log('Speech Recognition non supporté. Utilise Chrome ou Edge.', 'error');
+    return false;
+  }
+
+  recognition = new SR();
+  recognition.lang = 'fr-FR';
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.maxAlternatives = 1;
+
+  recognition.onstart = function() {
+    log('Écoute en cours... Parle !', 'info');
+    setStatus('Écoute... (parle !)', 'listening');
+  };
+
+  recognition.onresult = function(event) {
+    let interim = '';
+    let final = '';
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const transcript = event.results[i][0].transcript;
+      if (event.results[i].isFinal) {
+        final += transcript;
+      } else {
+        interim += transcript;
+      }
+    }
+    transcriptEl.textContent = final || interim;
+    if (final) {
+      const text = final.trim();
+      if (text) {
+        sendToRobot(text);
+        transcriptEl.textContent = '';
+      }
+    }
+  };
+
+  recognition.onerror = function(event) {
+    if (event.error === 'no-speech') {
+      // Pas de parole détectée, c'est normal
+    } else if (event.error === 'not-allowed') {
+      log('Accès au micro refusé. Autorise le micro dans le navigateur.', 'error');
+    } else {
+      log('Erreur ASR: ' + event.error, 'error');
+    }
+  };
+
+  recognition.onend = function() {
+    if (isListening) {
+      // Redémarrer automatiquement en mode continu
+      try { recognition.start(); } catch(e) {}
+    } else {
+      setStatus('Connecté au robot', 'connected');
+    }
+  };
+
+  return true;
+}
+
+// --- Start / Stop ---
+function startListening() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    connectWebSocket();
+    // Attendre la connexion puis démarrer
+    const checkInterval = setInterval(function() {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        clearInterval(checkInterval);
+        actuallyStart();
+      }
+    }, 500);
+    return;
+  }
+  actuallyStart();
+}
+
+function actuallyStart() {
+  if (!recognition) {
+    if (!initSpeechRecognition()) return;
+  }
+  isListening = true;
+  btnStart.disabled = true;
+  btnStop.disabled = false;
+  try {
+    recognition.start();
+  } catch(e) {
+    log('Erreur démarrage: ' + e.message, 'error');
+  }
+}
+
+function stopListening() {
+  isListening = false;
+  btnStart.disabled = false;
+  btnStop.disabled = true;
+  if (recognition) {
+    recognition.stop();
+  }
+  setStatus('Connecté au robot (arrêté)', 'connected');
+  log('Écoute arrêtée.', 'info');
+}
+
+// --- Init ---
+log('Prêt. Clique sur "Démarrer l\'écoute" et parle dans ton casque.', 'info');
+connectWebSocket();
+</script>
+</body>
+</html>
