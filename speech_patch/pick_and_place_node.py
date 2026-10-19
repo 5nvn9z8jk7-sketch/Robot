@@ -27,7 +27,7 @@ ACTION_GROUPS_PATH = '/home/ubuntu/software/arm_pc/ActionGroups'
 
 LINEAR_SPEED = 0.15
 ANGULAR_SPEED = 0.8
-TARGET_DISTANCE = 0.15
+TARGET_DISTANCE = 0.12
 
 DEFAULT_FX = 423.376
 DEFAULT_FY = 424.174
@@ -37,7 +37,8 @@ DEFAULT_CY = 201.658
 MIN_DEPTH_MM = 100
 MAX_DEPTH_MM = 4000
 DETECT_TIMEOUT = 5.0
-MIN_APPROACH = 0.15  # always drive at least 15cm if cube detected
+MIN_APPROACH = 0.20  # always drive at least 15cm if cube detected
+MIN_Y_PIXEL = 250   # only accept detections in lower part of image (ground level)
 ANGLE_DEADZONE = 0.02
 
 TRIGGER_VERBS = ['attrape', 'attraper', 'ramasse', 'ramasser', 'prends', 'prendre',
@@ -151,11 +152,17 @@ class PickAndPlaceNode(Node):
         self.cmd_vel_pub.publish(Twist())
 
     def _get_red_cube(self, timeout=5.0):
+        """Retourne le cube rouge avec Y dans la partie basse de l'image (sol)."""
         deadline = time.time() + timeout
         while time.time() < deadline and not self._abort:
             with self._lock:
                 info = self._latest_color_info
             if info and len(info.data) > 0:
+                # Prefer detections in lower part of image (ground level)
+                ground_cubes = [ci for ci in info.data if ci.color == TARGET_COLOR and ci.y >= MIN_Y_PIXEL]
+                if ground_cubes:
+                    return ground_cubes[0]
+                # Fallback: any red detection
                 for ci in info.data:
                     if ci.color == TARGET_COLOR:
                         return ci
@@ -186,10 +193,11 @@ class PickAndPlaceNode(Node):
         self.get_logger().info(f'Rotation: {math.degrees(angle_rad):.1f} deg en {duration:.2f}s')
         twist = Twist()
         twist.angular.z = -math.copysign(ANGULAR_SPEED, angle_rad)
-        self.cmd_vel_pub.publish(twist)
+        # Publish continuously at 10Hz so motor controller doesn't timeout
         start = time.time()
         while time.time() - start < duration and not self._abort:
-            time.sleep(0.05)
+            self.cmd_vel_pub.publish(twist)
+            time.sleep(0.1)
         self._stop_robot()
         time.sleep(0.3)
 
@@ -201,10 +209,11 @@ class PickAndPlaceNode(Node):
         self.get_logger().info(f'Avance: {distance_m:.2f}m en {duration:.2f}s')
         twist = Twist()
         twist.linear.x = LINEAR_SPEED
-        self.cmd_vel_pub.publish(twist)
+        # Publish continuously at 10Hz so motor controller doesn't timeout
         start = time.time()
         while time.time() - start < duration and not self._abort:
-            time.sleep(0.05)
+            self.cmd_vel_pub.publish(twist)
+            time.sleep(0.1)
         self._stop_robot()
         time.sleep(0.3)
 
