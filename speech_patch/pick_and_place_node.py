@@ -218,91 +218,31 @@ class PickAndPlaceNode(Node):
         time.sleep(0.3)
 
     def _run_sequence(self, voice_text):
+        """Sequence simplifiee: detection visuelle + pick (sans navigation).
+        
+        Etapes:
+        1. Verifier qu'un cube rouge est visible (optionnel, informatif)
+        2. Annoncer
+        3. Executer l'action voice_pick
+        """
         try:
             self._say("Je cherche le cube rouge.")
 
-            cube = self._get_red_cube(timeout=DETECT_TIMEOUT)
-            if cube is None:
-                self._say("Je ne vois pas le cube rouge. Peux-tu le mettre devant moi ?")
-                return
-
-            self.get_logger().info(f'Cube detecte a pixel ({cube.x}, {cube.y})')
-
-            depth_mm = self._get_depth_at(cube.x, cube.y)
-            self.get_logger().info(f'Depth lookup at ({cube.x},{cube.y}): {depth_mm} mm (frames: depth={self._depth_frames}, color={self._color_frames})')
-            if depth_mm is None:
-                self._say("Je vois le cube mais je ne peux pas evaluer la distance.")
-                return
-
-            distance_m = depth_mm / 1000.0
-            self.get_logger().info(f'Profondeur: {depth_mm:.0f} mm = {distance_m:.2f} m')
-
-            angle_rad = math.atan2(cube.x - self._cx, self._fx)
-            self.get_logger().info(f'Angle horizontal: {math.degrees(angle_rad):.1f} deg')
-
-            if distance_m > 1:
-                self._say(f"J'ai vu le cube rouge a {distance_m:.1f} metres. Je me prepare a l'attraper.")
+            # 1. Verifier la detection (informatif seulement)
+            cube = self._get_red_cube(timeout=2.0)
+            if cube is not None:
+                depth_mm = self._get_depth_at(cube.x, cube.y)
+                if depth_mm:
+                    self.get_logger().info(f'Cube rouge vu a pixel ({cube.x},{cube.y}), depth={depth_mm:.0f}mm')
+                    self._say(f"J'ai vu le cube rouge. Je l'attrape !")
+                else:
+                    self.get_logger().info(f'Cube rouge vu a pixel ({cube.x},{cube.y}), pas de profondeur')
+                    self._say("J'ai vu le cube rouge. Je l'attrape !")
             else:
-                self._say(f"J'ai vu le cube rouge a {distance_m*100:.0f} centimetres. Je me prepare a l'attraper.")
+                self.get_logger().info('Pas de cube rouge detecte, mais je tente quand meme')
+                self._say("Je ne vois pas bien le cube, mais je tente d'attraper !")
 
-            self._turn_to(angle_rad)
-            if self._abort:
-                return
-
-            time.sleep(0.5)
-            cube2 = self._get_red_cube(timeout=2.0)
-            if cube2 is not None:
-                depth_mm2 = self._get_depth_at(cube2.x, cube2.y)
-                if depth_mm2 is not None:
-                    distance_m = depth_mm2 / 1000.0
-                    angle_rad2 = math.atan2(cube2.x - self._cx, self._fx)
-                    if abs(angle_rad2) > ANGLE_DEADZONE:
-                        self.get_logger().info(f'Re-centrage: {math.degrees(angle_rad2):.1f} deg')
-                        self._turn_to(angle_rad2)
-                        if self._abort:
-                            return
-                        time.sleep(0.3)
-                        cube3 = self._get_red_cube(timeout=1.0)
-                        if cube3 is not None:
-                            d3 = self._get_depth_at(cube3.x, cube3.y)
-                            if d3 is not None:
-                                distance_m = d3 / 1000.0
-
-            self.get_logger().info(f'Distance finale: {distance_m:.2f} m')
-
-            # Two-phase approach: rough approach then fine approach
-            # Phase 1: get close (stop at 25cm from camera)
-            approach1 = max(distance_m - 0.25, MIN_APPROACH)
-            self.get_logger().info(f'Phase 1: avance de {approach1:.2f} m')
-            self._say("J'avance vers le cube.")
-            self._drive_forward(approach1)
-            if self._abort:
-                return
-
-            # Phase 2: re-center and fine approach (stop at 15cm)
-            time.sleep(0.5)
-            cube_fine = self._get_red_cube(timeout=2.0)
-            if cube_fine is not None:
-                d_fine = self._get_depth_at(cube_fine.x, cube_fine.y)
-                if d_fine is not None:
-                    dist_fine = d_fine / 1000.0
-                    angle_fine = math.atan2(cube_fine.x - self._cx, self._fx)
-                    self.get_logger().info(f'Phase 2: cube at {dist_fine:.2f}m, angle {math.degrees(angle_fine):.1f} deg')
-                    # Re-center
-                    if abs(angle_fine) > ANGLE_DEADZONE:
-                        self._turn_to(angle_fine)
-                        if self._abort:
-                            return
-                        time.sleep(0.3)
-                    # Fine approach
-                    approach2 = max(dist_fine - TARGET_DISTANCE, 0.05)
-                    if approach2 > 0.05:
-                        self.get_logger().info(f'Phase 2: avance de {approach2:.2f} m')
-                        self._drive_forward(approach2)
-                        if self._abort:
-                            return
-
-            self._say("J'attrape le cube !")
+            # 2. Executer la prehension
             self.get_logger().info('Execution action voice_pick...')
             self.arm_controller.run_action('voice_pick')
             time.sleep(5.0)
@@ -315,7 +255,6 @@ class PickAndPlaceNode(Node):
             import traceback
             traceback.print_exc()
             self._say("Desole, il y a eu un probleme.")
-            self._stop_robot()
         finally:
             self._stop_robot()
             with self._lock:
