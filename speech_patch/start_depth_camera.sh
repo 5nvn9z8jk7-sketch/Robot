@@ -1,27 +1,47 @@
 #!/bin/bash
-source /opt/ros/humble/setup.bash 2>/dev/null
-source ~/ros2_ws/install/setup.bash 2>/dev/null
-source ~/third_party/third_party_ws/install/setup.bash 2>/dev/null
-source ~/third_party/aurora_ws/install/setup.bash 2>/dev/null
-export DEPTH_CAMERA_TYPE=aurora
-export need_compile=True
-if ros2 topic list 2>/dev/null | grep -q '/depth_cam/depth0/image_raw'; then
-    echo 'Camera depth deja active'
+# Lance la caméra depth Aurora pour le pick-and-place
+# Usage: bash start_depth_camera.sh
+
+source /home/ubuntu/ros2_ws/install/setup.bash
+
+echo "=== Vérification caméra depth ==="
+
+# Vérifier si le topic publie déjà
+if timeout 2 ros2 topic hz /depth_cam/depth0/image_raw 2>/dev/null | head -1 | grep -q "average rate"; then
+    echo "✅ Caméra depth déjà active"
     exit 0
 fi
-pkill -f aurora930_node 2>/dev/null
-pkill -f orbbec_camera 2>/dev/null
-pkill -f component_container 2>/dev/null
-sleep 1
-nohup ros2 launch peripherals depth_camera.launch.py depth_camera_name:=depth_cam > ~/aurora_cam.log 2>&1 &
-echo "Aurora 930 camera PID=$!"
-for i in $(seq 1 15); do
-    sleep 1
-    if ros2 topic list 2>/dev/null | grep -q '/depth_cam/depth0/image_raw'; then
-        echo "Camera prete apres ${i}s"
-        exit 0
-    fi
-done
-echo 'ERREUR: camera non demarree'
-tail -20 ~/aurora_cam.log
-exit 1
+
+echo "⚠️  Caméra depth inactive — tentative de lancement..."
+
+# Tuer les anciens processus caméra
+pkill -f "aurora" 2>/dev/null
+pkill -f "depth_cam" 2>/dev/null
+pkill -f "usb_cam" 2>/dev/null
+sleep 2
+
+# Essayer de lancer via bringup (qui inclut depth_camera)
+echo "=== Lancement via bringup (caméra uniquement) ==="
+nohup ros2 launch peripherals depth_camera.launch.py > /tmp/depth_cam.log 2>&1 &
+sleep 5
+
+# Vérifier
+if timeout 2 ros2 topic hz /depth_cam/depth0/image_raw 2>/dev/null | head -1 | grep -q "average rate"; then
+    echo "✅ Caméra depth lancée avec succès"
+    exit 0
+fi
+
+# Si échec, essayer usb_cam
+echo "=== Tentative avec usb_cam ==="
+nohup ros2 run usb_cam usb_cam_node_exe --ros-args -p video_device:=/dev/video0 -p image_width:=640 -p image_height:=480 -p pixel_format:=yuyv -p camera_frame_id:=depth_cam > /tmp/usb_cam.log 2>&1 &
+sleep 3
+
+# Vérifier les topics disponibles
+if ros2 topic list 2>/dev/null | grep -q "image_raw"; then
+    echo "✅ Caméra lancée (topic image_raw disponible)"
+    ros2 topic list 2>/dev/null | grep image_raw
+else
+    echo "❌ Impossible de lancer la caméra"
+    echo "Vérifie que la caméra est branchée et alimentée"
+    exit 1
+fi

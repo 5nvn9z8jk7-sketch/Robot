@@ -87,26 +87,26 @@ class VoiceBridge:
     def execute_action(self, action, duration=MOVE_DURATION):
         action = action.lower().strip()
         if "forward" in action or "avance" in action:
-            print(f"  -> Avancer ({LINEAR_SPEED} m/s, {duration}s)")
+            print(f"  -> Avancer ({-LINEAR_SPEED} m/s, {duration}s)")
             self.send_twist(LINEAR_SPEED, 0.0)
             time.sleep(duration)
             self.stop_robot()
             return "forward"
         elif "backward" in action or "recule" in action:
-            print(f"  -> Reculer ({-LINEAR_SPEED} m/s, {duration}s)")
-            self.send_twist(-LINEAR_SPEED, 0.0)
+            print(f"  -> Reculer ({LINEAR_SPEED} m/s, {duration}s)")
+            self.send_twist(LINEAR_SPEED, 0.0)
             time.sleep(duration)
             self.stop_robot()
             return "backward"
         elif "left" in action or "gauche" in action:
-            print(f"  -> Gauche ({ANGULAR_SPEED} rad/s, {duration}s)")
+            print(f"  -> Gauche ({-ANGULAR_SPEED} rad/s, {duration}s)")
             self.send_twist(0.0, ANGULAR_SPEED)
             time.sleep(duration)
             self.stop_robot()
             return "left"
         elif "right" in action or "droite" in action:
-            print(f"  -> Droite ({-ANGULAR_SPEED} rad/s, {duration}s)")
-            self.send_twist(0.0, -ANGULAR_SPEED)
+            print(f"  -> Droite ({ANGULAR_SPEED} rad/s, {duration}s)")
+            self.send_twist(0.0, ANGULAR_SPEED)
             time.sleep(duration)
             self.stop_robot()
             return "right"

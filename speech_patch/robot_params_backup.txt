@@ -1,0 +1,23 @@
+=== Parametres pick_and_place_node_v5 ===
+  angular_speed
+  camera_to_gripper_offset
+  cx
+  cy
+  distance_tolerance
+  fx
+  fy
+  gripper_reach
+  linear_speed
+  min_y_pixel
+  scan_step_deg
+  target_size_px
+  use_custom_grip
+  use_depth
+  use_sim_time
+camera_to_gripper_offset = Double value is: 0.1
+gripper_reach = Double value is: 0.15
+target_size_px = Integer value is: 80
+linear_speed = Double value is: 0.1
+angular_speed = Double value is: 0.5
+min_y_pixel = Integer value is: 100
+use_depth = Boolean value is: True

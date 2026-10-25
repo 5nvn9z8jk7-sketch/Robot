@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Clavier Numérique — Robot Hiwonder</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    max-width: 480px; margin: 20px auto; padding: 15px;
+    background: #0d1117; color: #e6edf3; text-align: center;
+    min-height: 100vh;
+  }
+  h1 { font-size: 1.4em; margin-bottom: 5px; color: #58a6ff; }
+  .subtitle { color: #8b949e; font-size: 0.85em; margin-bottom: 15px; }
+  .status-bar { display: flex; gap: 8px; justify-content: center; margin-bottom: 15px; flex-wrap: wrap; }
+  .badge { padding: 6px 14px; border-radius: 20px; font-size: 0.8em; font-weight: 600; }
+  .badge.connected { background: #1f6f3f; color: #3fb950; }
+  .badge.disconnected { background: #6f2f2f; color: #f85149; }
+  .badge.sending { background: #1f4f6f; color: #58a6ff; animation: blink 0.5s infinite; }
+  .badge.warning { background: #6f4f1f; color: #d29922; }
+  @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .speed-control { background: #161b22; border-radius: 12px; padding: 12px 16px; margin-bottom: 15px; border: 1px solid #30363d; }
+  .speed-control label { font-size: 0.85em; color: #8b949e; display: block; margin-bottom: 6px; }
+  .speed-control input[type=range] { width: 100%; accent-color: #58a6ff; }
+  .speed-value { font-size: 1.1em; font-weight: bold; color: #58a6ff; }
+  .keypad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 15px; }
+  .key {
+    aspect-ratio: 1.4; border: none; border-radius: 12px; cursor: pointer;
+    font-size: 0.85em; font-weight: 600; transition: all 0.15s;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+    background: #21262d; color: #e6edf3; border: 1px solid #30363d;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .key:active { transform: scale(0.93); }
+  .key .num { font-size: 1.6em; font-weight: 800; color: #58a6ff; line-height: 1; }
+  .key .label { font-size: 0.75em; color: #8b949e; }
+  .key .icon { font-size: 1.4em; }
+  .key.forward  { background: #0d2818; border-color: #1f6f3f; }
+  .key.forward .num, .key.forward .icon { color: #3fb950; }
+  .key.backward { background: #281a0d; border-color: #6f4f1f; }
+  .key.backward .num, .key.backward .icon { color: #d29922; }
+  .key.left     { background: #0d1f28; border-color: #1f4f6f; }
+  .key.left .num, .key.left .icon { color: #58a6ff; }
+  .key.right    { background: #1f0d28; border-color: #4f1f6f; }
+  .key.right .num, .key.right .icon { color: #bc8cff; }
+  .key.stop     { background: #2d0a0a; border-color: #6f1f1f; grid-column: span 3; aspect-ratio: 2.5; }
+  .key.stop .num, .key.stop .icon { color: #f85149; }
+  .key.speak    { background: #1a1a0d; border-color: #4f4f1f; }
+  .key.speak .num, .key.speak .icon { color: #e3b341; }
+  .key.pick     { background: #2d0a2d; border-color: #6f1f4f; grid-column: span 3; aspect-ratio: 2.5; }
+  .key.scan     { background: #0a2d2d; border-color: #1f6f6f; grid-column: span 3; aspect-ratio: 2.5; }
+  .key.scan .num, .key.scan .icon { color: #4dd0e1; }
+  .key.mission  { background: #0d1a2d; border-color: #1f3f6f; grid-column: span 3; aspect-ratio: 2.5; }
+  .key.mission .num, .key.mission .icon { color: #58a6ff; }
+  .key.patrol   { background: #1a0d2d; border-color: #3f1f6f; grid-column: span 3; aspect-ratio: 2.5; }
+  .key.patrol .num, .key.patrol .icon { color: #bc8cff; }
+  .key.home     { background: #0d2d1a; border-color: #1f6f3f; grid-column: span 3; aspect-ratio: 2.5; }
+  .key.home .num, .key.home .icon { color: #3fb950; }
+
+  /* Joystick virtuel */
+  .joystick-area {
+    background: #161b22; border-radius: 12px; padding: 15px;
+    border: 1px solid #30363d; margin-bottom: 15px; text-align: center;
+  }
+  .joystick-area h3 { font-size: 0.9em; color: #8b949e; margin-bottom: 10px; }
+  .joystick-grid { display: grid; grid-template-columns: repeat(3, 60px); grid-template-rows: repeat(3, 60px); gap: 5px; justify-content: center; }
+  .joy-btn {
+    border: none; border-radius: 8px; cursor: pointer; font-size: 1.5em;
+    background: #21262d; color: #e6edf3; border: 1px solid #30363d;
+    display: flex; align-items: center; justify-content: center;
+    -webkit-tap-highlight-color: transparent; user-select: none;
+  }
+  .joy-btn:active { transform: scale(0.9); background: #30363d; }
+  .joy-btn.fwd { grid-column: 2; grid-row: 1; color: #3fb950; }
+  .joy-btn.back { grid-column: 2; grid-row: 3; color: #d29922; }
+  .joy-btn.left { grid-column: 1; grid-row: 2; color: #58a6ff; }
+  .joy-btn.right { grid-column: 3; grid-row: 2; color: #bc8cff; }
+  .joy-btn.stop { grid-column: 2; grid-row: 2; color: #f85149; font-size: 1em; }
+  .joy-btn.slow { grid-column: 1; grid-row: 1; font-size: 0.8em; color: #8b949e; }
+  .joy-btn.fast { grid-column: 3; grid-row: 1; font-size: 0.8em; color: #8b949e; }
+  .joy-btn.slow:active, .joy-btn.fast:active { background: #4f4f1f; }
+  .key.pick .num, .key.pick .icon { color: #ff6b9d; }
+  .key:hover { filter: brightness(1.3); }
+  .log {
+    background: #161b22; border-radius: 12px; padding: 12px;
+    border: 1px solid #30363d; text-align: left;
+    font-family: 'SF Mono', Monaco, monospace; font-size: 0.78em;
+    max-height: 180px; overflow-y: auto;
+  }
+  .log .entry { padding: 3px 0; border-bottom: 1px solid #21262d; display: flex; gap: 8px; }
+  .log .entry:last-child { border-bottom: none; }
+  .log .time { color: #484f58; flex-shrink: 0; }
+  .log .cmd  { color: #58a6ff; }
+  .log .ok   { color: #3fb950; }
+  .log .err  { color: #f85149; }
+  .log .warn { color: #d29922; }
+  .tts-box {
+    margin-top: 10px; padding: 12px 16px; border-radius: 10px;
+    background: #1c2128; border: 1px solid #30363d;
+    font-size: 0.95em; min-height: 40px; color: #e3b341;
+  }
+  .tts-box:empty::before { content: 'En attente de réponse vocale...'; color: #484f58; font-size: 0.85em; }
+  .hint { color: #484f58; font-size: 0.75em; margin-top: 10px; }
+  kbd { background: #21262d; border: 1px solid #30363d; border-radius: 4px; padding: 2px 6px; font-size: 0.8em; font-family: monospace; }
+</style>
+</head>
+<body>
+
+<h1>🤖 Robot Hiwonder</h1>
+<div class="subtitle">Clavier de commandes numérotées</div>
+
+<div class="status-bar">
+  <span class="badge disconnected" id="statusRobot">Robot: déconnecté</span>
+  <span class="badge disconnected" id="statusLLM">LLM: déconnecté</span>
+  <span class="badge disconnected" id="statusMotors">Moteurs: inconnu</span>
+</div>
+
+<div class="speed-control">
+  <label>Vitesse linéaire: <span class="speed-value" id="speedVal">0.3</span> m/s | Rotation: <span class="speed-value" id="rotVal">1.0</span> rad/s</label>
+  <input type="range" id="speedSlider" min="0.1" max="0.8" step="0.1" value="0.3" oninput="updateSpeed()">
+</div>
+
+<div class="speed-control" style="margin-top:10px;">
+  <label>🤏 Distance cible (caméra depth): <span class="speed-value" id="pickDistVal">0.18</span> m</label>
+  <input type="range" id="pickDistSlider" min="0.10" max="0.40" step="0.01" value="0.18" oninput="updatePickDist()">
+  <div style="font-size:0.75em;color:#8b949e;margin-top:4px;">Distance caméra-cube pour la préhension (précision ±2cm avec depth)</div>
+</div>
+
+<div class="keypad">
+  <button class="key speak" onclick="sendVoice(7)">
+    <span class="num">7</span><span class="icon">👋</span><span class="label">Salut</span>
+  </button>
+  <button class="key forward" onclick="sendCmd(8)">
+    <span class="num">8</span><span class="icon">⬆️</span><span class="label">Avance</span>
+  </button>
+  <button class="key speak" onclick="sendVoice(9)">
+    <span class="num">9</span><span class="icon">❓</span><span class="label">Qui es-tu</span>
+  </button>
+
+  <button class="key left" onclick="sendCmd(4)">
+    <span class="num">4</span><span class="icon">⬅️</span><span class="label">Gauche</span>
+  </button>
+  <button class="key stop" onclick="sendCmd(5)" style="grid-column:span 1;aspect-ratio:1.4;">
+    <span class="num">5</span><span class="icon">⏹️</span><span class="label">STOP</span>
+  </button>
+  <button class="key right" onclick="sendCmd(6)">
+    <span class="num">6</span><span class="icon">➡️</span><span class="label">Droite</span>
+  </button>
+
+  <button class="key speak" onclick="sendVoice(1)">
+    <span class="num">1</span><span class="icon">🙏</span><span class="label">Merci</span>
+  </button>
+  <button class="key backward" onclick="sendCmd(2)">
+    <span class="num">2</span><span class="icon">⬇️</span><span class="label">Recule</span>
+  </button>
+  <button class="key speak" onclick="sendVoice(3)">
+    <span class="num">3</span><span class="icon">💬</span><span class="label">Ça va?</span>
+  </button>
+
+  <button class="key scan" onclick="sendScan()">
+    <span class="num">C</span><span class="icon">🔍</span><span class="label">CHERCHE LE CUBE (360°)</span>
+  </button>
+
+  <button class="key pick" onclick="sendPick()">
+    <span class="num">P</span><span class="icon">🤏</span><span class="label">ATTRAPE LE CUBE (direct)</span>
+  </button>
+
+  <button class="key stop" onclick="sendCmd(0)">
+    <span class="num">0</span><span class="icon">🛑</span><span class="label">ARRÊT D'URGENCE</span>
+  </button>
+
+  <!-- Mission autonome -->
+  <button class="key mission" onclick="sendMission('mission attrape tous les cubes')">
+    <span class="num">M</span><span class="icon">🤖</span><span class="label">MISSION: ATTRAPE TOUS LES CUBES</span>
+  </button>
+
+  <button class="key patrol" onclick="sendMission('patrouille')">
+    <span class="num">R</span><span class="icon">🚔</span><span class="label">PATROUILLE (2 min)</span>
+  </button>
+
+  <button class="key home" onclick="sendMission('retourne a la base')">
+    <span class="num">B</span><span class="icon">🏠</span><span class="label">RETOUR BASE</span>
+  </button>
+
+  <button class="key speak" onclick="sendMission('status')" style="grid-column:span 3;aspect-ratio:2.5;">
+    <span class="num">S</span><span class="icon">📊</span><span class="label">STATUS (batterie, position)</span>
+  </button>
+</div>
+
+<!-- Joystick virtuel -->
+<div class="joystick-area">
+  <h3>🕹️ Joystick (maintenir pour bouger)</h3>
+  <div class="joystick-grid">
+    <button class="joy-btn slow" onmousedown="joyStart('slow')" onmouseup="joyStop()" ontouchstart="joyStart('slow')" ontouchend="joyStop()">🐢</button>
+    <button class="joy-btn fwd" onmousedown="joyStart('fwd')" onmouseup="joyStop()" ontouchstart="joyStart('fwd')" ontouchend="joyStop()">⬆️</button>
+    <button class="joy-btn fast" onmousedown="joyStart('fast')" onmouseup="joyStop()" ontouchstart="joyStart('fast')" ontouchend="joyStop()">🐇</button>
+    <button class="joy-btn left" onmousedown="joyStart('left')" onmouseup="joyStop()" ontouchstart="joyStart('left')" ontouchend="joyStop()">⬅️</button>
+    <button class="joy-btn stop" onclick="joyStop(); sendCmd(0)">⏹️</button>
+    <button class="joy-btn right" onmousedown="joyStart('right')" onmouseup="joyStop()" ontouchstart="joyStart('right')" ontouchend="joyStop()">➡️</button>
+    <div></div><div></div><div></div>
+  </div>
+</div>
+
+<div class="tts-box" id="ttsBox"></div>
+<div class="log" id="logBox"></div>
+
+<div class="hint">
+  <kbd>↑↓←→</kbd>/<kbd>ZQSD</kbd> déplace — <kbd>0-9</kbd> — <kbd>P</kbd> pick — <kbd>C</kbd> scan — <kbd>M</kbd> mission — <kbd>R</kbd> patrouille — <kbd>B</kbd> base — <kbd>S</kbd> status — <kbd>ESPACE</kbd> stop
+</div>
+
+<script>
+const ROBOT_WS = 'ws://192.168.1.30:9090';
+const OLLAMA_URL = 'http://192.168.1.20:11434';
+
+let ws = null;
+let llmReady = false;
+let cmdVelTimer = null;
+let speed = 0.3;
+let rotSpeed = 1.0;
+let motorsReady = false;
+
+const CMDS = {
+  8: { name: 'Avance',   linear: () => speed,    angular: 0,    duration: 2000 },
+  2: { name: 'Recule',   linear: () => -speed,   angular: 0,    duration: 2000 },
+  4: { name: 'Gauche',   linear: 0,               angular: () => rotSpeed,  duration: 1500 },
+  6: { name: 'Droite',   linear: 0,               angular: () => -rotSpeed, duration: 1500 },
+  5: { name: 'STOP',     linear: 0,               angular: 0,    duration: 0 },
+  0: { name: 'URGENCE',  linear: 0,               angular: 0,    duration: 0 },
+};
+
+const VOICE_CMDS = {
+  7: 'Dis bonjour au robot',
+  9: 'Présente-toi, qui es-tu ?',
+  1: 'Dis merci au robot',
+  3: 'Demande au robot comment ça va',
+};
+
+const PICK_CMD = 'Attrape le cube rouge et mets-le dans la boîte';
+
+function log(msg, type) {
+  const box = document.getElementById('logBox');
+  const time = new Date().toLocaleTimeString('fr-FR');
+  const colors = { cmd: 'cmd', ok: 'ok', err: 'err', warn: 'warn' };
+  const entry = document.createElement('div');
+  entry.className = 'entry';
+  entry.innerHTML = '<span class="time">' + time + '</span><span class="' + (colors[type]||'cmd') + '">' + msg + '</span>';
+  box.appendChild(entry);
+  box.scrollTop = box.scrollHeight;
+  while (box.children.length > 30) box.removeChild(box.firstChild);
+}
+
+function checkDepth() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  // Vérifier si le topic depth publie via rosapi
+  ws.send(JSON.stringify({
+    op: 'call_service',
+    service: '/rosapi/topics',
+    args: {},
+    id: 'check_depth'
+  }));
+  // Vérifier aussi si le topic a des publishers
+  ws.send(JSON.stringify({
+    op: 'call_service',
+    service: '/rosapi/topic_type',
+    args: { topic: '/depth_cam/depth0/image_raw' },
+    id: 'depth_type'
+  }));
+}
+
+function handleDepthResponse(msg) {
+  if (msg.id === 'check_depth' && msg.values && msg.values.topics) {
+    const hasDepth = msg.values.topics.some(t => t.includes('depth_cam/depth0/image_raw'));
+    const badge = document.getElementById('statusMotors');
+    // On pourrait ajouter un badge depth, mais pour l'instant on log
+    if (hasDepth) log('📷 Topic depth camera présent', 'ok');
+  }
+}
+
+function checkMotors() {
+  const badge = document.getElementById('statusMotors');
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ op: 'call_service', service: '/rosapi/nodes', args: {}, id: 'check_motors' }));
+}
+
+function handleServiceResponse(msg) {
+  if (msg.id === 'check_motors' && msg.values && msg.values.nodes) {
+    const badge = document.getElementById('statusMotors');
+    const hasMotors = msg.values.nodes.some(n => n.includes('ros_robot_controller'));
+    if (hasMotors) {
+      badge.textContent = 'Moteurs: OK';
+      badge.className = 'badge connected';
+      motorsReady = true;
+      log('Nœud moteurs (ros_robot_controller) détecté', 'ok');
+    } else {
+      badge.textContent = 'Moteurs: OFF';
+      badge.className = 'badge warning';
+      motorsReady = false;
+      log('⚠️ ros_robot_controller non actif — le robot ne bougera pas!', 'warn');
+    }
+  }
+}
+
+function connectRobot() {
+  const badge = document.getElementById('statusRobot');
+  badge.textContent = 'Robot: connexion...';
+  badge.className = 'badge sending';
+  ws = new WebSocket(ROBOT_WS);
+
+  ws.onopen = () => {
+    badge.textContent = 'Robot: connecté';
+    badge.className = 'badge connected';
+    log('Connecté au robot (rosbridge)', 'ok');
+    subscribe('/tts_node/tts_text');
+    subscribe('/agent_process/result');
+    setTimeout(checkMotors, 1000);
+    setTimeout(checkDepth, 1500);
+  };
+
+  ws.onmessage = (event) => {
+    try {
+      const msg = JSON.parse(event.data);
+      if (msg.op === 'publish') {
+        if (msg.topic === '/tts_node/tts_text') {
+          document.getElementById('ttsBox').textContent = '🗣️ ' + msg.msg.data;
+          log('TTS: "' + msg.msg.data + '"', 'ok');
+        }
+        if (msg.topic === '/agent_process/result') {
+          log('LLM: ' + msg.msg.data.substring(0, 100), 'cmd');
+        }
+      }
+      if (msg.op === 'service_response') {
+        handleServiceResponse(msg);
+        handleDepthResponse(msg);
+      }
+    } catch(e) {}
+  };
+
+  ws.onclose = () => {
+    badge.textContent = 'Robot: déconnecté';
+    badge.className = 'badge disconnected';
+    const mb = document.getElementById('statusMotors');
+    mb.textContent = 'Moteurs: inconnu';
+    mb.className = 'badge disconnected';
+    log('Déconnecté du robot', 'err');
+    setTimeout(connectRobot, 3000);
+  };
+
+  ws.onerror = () => {
+    badge.textContent = 'Robot: erreur';
+    badge.className = 'badge disconnected';
+    log('Erreur WebSocket', 'err');
+  };
+}
+
+function subscribe(topic) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ op: 'subscribe', topic: topic, type: 'std_msgs/String' }));
+  }
+}
+
+function publishCmdVel(linear, angular) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({
+    op: 'publish',
+    topic: '/controller/cmd_vel',
+    msg: { linear: { x: linear, y: 0, z: 0 }, angular: { x: 0, y: 0, z: angular } }
+  }));
+}
+
+async function checkLLM() {
+  const badge = document.getElementById('statusLLM');
+  try {
+    const resp = await fetch(OLLAMA_URL + '/api/tags');
+    const data = await resp.json();
+    const hasModel = data.models && data.models.some(m => m.name.includes('qwen3.5:9b'));
+    if (hasModel) {
+      badge.textContent = 'LLM: prêt';
+      badge.className = 'badge connected';
+      llmReady = true;
+      log('LLM Ollama détecté (qwen3.5:9b)', 'ok');
+    } else {
+      badge.textContent = 'LLM: modèle manquant';
+      badge.className = 'badge disconnected';
+    }
+  } catch(e) {
+    badge.textContent = 'LLM: hors ligne';
+    badge.className = 'badge disconnected';
+    log('LLM Ollama inaccessible', 'err');
+  }
+}
+
+function sendCmd(num) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) { log('Robot non connecté !', 'err'); return; }
+  if (cmdVelTimer) { clearInterval(cmdVelTimer); cmdVelTimer = null; }
+  const cmd = CMDS[num];
+  if (!cmd) return;
+  log('[' + num + '] ' + cmd.name, 'cmd');
+  if (!motorsReady) log('⚠️ Moteurs non détectés — le robot ne bougera probablement pas', 'warn');
+  if (num === 5 || num === 0) {
+    publishCmdVel(0, 0);
+    log('[' + num + '] Arrêt immédiat', 'ok');
+    return;
+  }
+  const linear = typeof cmd.linear === 'function' ? cmd.linear() : cmd.linear;
+  const angular = typeof cmd.angular === 'function' ? cmd.angular() : cmd.angular;
+  let count = 0;
+  const maxCount = Math.floor(cmd.duration / 100);
+  publishCmdVel(linear, angular);
+  cmdVelTimer = setInterval(() => {
+    count++;
+    if (count >= maxCount) {
+      clearInterval(cmdVelTimer);
+      cmdVelTimer = null;
+      publishCmdVel(0, 0);
+      log('[' + num + '] ' + cmd.name + ' terminé', 'ok');
+    } else {
+      publishCmdVel(linear, angular);
+    }
+  }, 100);
+}
+
+async function sendVoice(num) {
+  const text = VOICE_CMDS[num];
+  if (!text) return;
+  log('[' + num + '] Vocal: "' + text + '"', 'cmd');
+  if (!llmReady) { log('LLM non disponible', 'err'); return; }
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ op: 'publish', topic: '/vocal_detect/asr_result', msg: { data: text } }));
+    log('[' + num + '] Envoyé à l\'ASR', 'ok');
+  }
+}
+
+async function sendPick() {
+  log('[P] 🤏 Pick-and-Place: "Attrape le cube rouge"', 'cmd');
+  if (!llmReady) { log('LLM non disponible', 'err'); return; }
+  if (!ws || ws.readyState !== WebSocket.OPEN) { log('Robot non connecté', 'err'); return; }
+  ws.send(JSON.stringify({ op: 'publish', topic: '/vocal_detect/asr_result', msg: { data: PICK_CMD } }));
+  log('[P] Commande envoyée — vérifie la caméra depth (topic /depth_cam/depth0/image_raw)', 'ok');
+}
+
+document.addEventListener('keydown', (e) => {
+  // Flèches directionnelles (AZERTY friendly)
+  if (e.key === 'ArrowUp')    { e.preventDefault(); sendCmd(8); return; }
+  if (e.key === 'ArrowDown')  { e.preventDefault(); sendCmd(2); return; }
+  if (e.key === 'ArrowLeft')  { e.preventDefault(); sendCmd(4); return; }
+  if (e.key === 'ArrowRight') { e.preventDefault(); sendCmd(6); return; }
+  // Touches AZERTY ZQSD
+  if (e.key === 'z' || e.key === 'Z') { sendCmd(8); return; }
+  if (e.key === 's' || e.key === 'S') { sendCmd(2); return; }
+  if (e.key === 'q' || e.key === 'Q') { sendCmd(4); return; }
+  if (e.key === 'd' || e.key === 'D') { sendCmd(6); return; }
+  // Touches numériques
+  const num = parseInt(e.key);
+  if (!isNaN(num) && num >= 0 && num <= 9) {
+    if (CMDS[num]) sendCmd(num);
+    else if (VOICE_CMDS[num]) sendVoice(num);
+  }
+  if (e.key === 'p' || e.key === 'P') { e.preventDefault(); sendPick(); }
+  if (e.key === 'c' || e.key === 'C') { e.preventDefault(); sendScan(); }
+  if (e.key === ' ' || e.key === 'Spacebar') { e.preventDefault(); sendCmd(0); }
+});
+
+function updateSpeed() {
+  speed = parseFloat(document.getElementById('speedSlider').value);
+  document.getElementById('speedVal').textContent = speed.toFixed(1);
+  rotSpeed = speed * 3;
+  document.getElementById('rotVal').textContent = rotSpeed.toFixed(1);
+}
+
+function updatePickDist() {
+  const val = parseFloat(document.getElementById('pickDistSlider').value);
+  document.getElementById('pickDistVal').textContent = val.toFixed(2);
+  document.getElementById('pickDistM').textContent = val.toFixed(2);
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      op: 'call_service',
+      service: '/pick_and_place_node_v4/set_parameters',
+      args: { parameters: [
+        { name: 'gripper_reach', value: { type: 3, double_value: val } }
+      ] },
+      id: 'set_pick_dist'
+    }));
+    log('Distance cible (depth): ' + val.toFixed(2) + ' m', 'cmd');
+  }
+}
+
+// === MISSION AUTONOME ===
+function sendMission(cmd) {
+  log('[MISSION] "' + cmd + '"', 'cmd');
+  if (!ws || ws.readyState !== WebSocket.OPEN) { log('Robot non connecté', 'err'); return; }
+  ws.send(JSON.stringify({ op: 'publish', topic: '/vocal_detect/asr_result', msg: { data: cmd } }));
+  log('[MISSION] Envoyé — le robot exécute en autonome', 'ok');
+}
+
+// === JOYSTICK VIRTUEL ===
+let joyTimer = null;
+let joySpeed = 0.3;
+let joyRot = 1.0;
+
+function joyStart(direction) {
+  joyStop();
+  let linear = 0, angular = 0;
+  const fast = 1.5, slow = 0.5;
+  switch(direction) {
+    case 'fwd':   linear = -joySpeed; break;
+    case 'back':  linear = joySpeed; break;
+    case 'left':  angular = -joyRot; break;
+    case 'right': angular = joyRot; break;
+    case 'slow':  joySpeed = Math.max(0.1, joySpeed - 0.1); joyRot = Math.max(0.3, joyRot - 0.3); log('🐢 Vitesse: ' + joySpeed.toFixed(1)); return;
+    case 'fast':  joySpeed = Math.min(0.8, joySpeed + 0.1); joyRot = Math.min(2.0, joyRot + 0.3); log('🐇 Vitesse: ' + joySpeed.toFixed(1)); return;
+  }
+  publishCmdVel(linear, angular);
+  joyTimer = setInterval(() => publishCmdVel(linear, angular), 100);
+  log('🕹️ ' + direction, 'cmd');
+}
+
+function joyStop() {
+  if (joyTimer) { clearInterval(joyTimer); joyTimer = null; }
+  publishCmdVel(0, 0);
+}
+
+// Raccourcis clavier mission
+// M = mission, R = patrouille, B = base, S = status
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'm' || e.key === 'M') { e.preventDefault(); sendMission('mission attrape tous les cubes'); }
+  if (e.key === 'r' || e.key === 'R') { e.preventDefault(); sendMission('patrouille'); }
+  if (e.key === 'b' || e.key === 'B') { e.preventDefault(); sendMission('retourne a la base'); }
+  if (e.key === 's' || e.key === 'S') { e.preventDefault(); sendMission('status'); }
+});
+
+connectRobot();
+checkLLM();
+log('Interface prête — 0-9, ZQSD, P=pick, C=scan, M=mission, R=patrouille, B=base, S=status', 'cmd');
+</script>
+</body>
+</html>

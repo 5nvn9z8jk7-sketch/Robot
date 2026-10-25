@@ -1,125 +1,212 @@
-# SESSION 18/10/2026 — Reprise projet, diagnostic rosbridge, pont vocal fonctionnel
+# 📋 SESSION 25/10/2026 — Reprise projet, corrections pick-and-place, calibration
 
 ## Résumé exécutif
 
-**BREAKTHROUGH** : Le robot répond aux commandes vocales françaises via un pont LLM (PC) → rosbridge (robot) → mouvement. Sans déploiement du speech_patch.
+Session de debug et correction du pick-and-place v5. Le robot n'arrivait pas à attraper le cube (attrapait dans le vide). **2 bugs majeurs corrigés** + création d'outils de calibration.
 
-## Diagnostic robot (via rosbridge WebSocket :9090)
+---
 
-### État du robot (192.168.1.30)
-- **UP** : ping OK, ports 22/4000/8080/9090 ouverts
-- **ROS2 actif** : 28 nœuds, rosbridge_websocket sur port 9090
-- **Matériel moteurs : FONCTIONNEL** (testé : robot avance/recule/tourne)
-- **Odometry** : fonctionne, publie /odom et /odom_raw
+## 🐛 Bugs corrigés
 
-### Chaîne de mouvement (découverte)
+### 1. Filtre `min_y_pixel=100` rejetait tous les cubes
+- **Symptôme** : Logs `Filtre: 1 objets, min_y=100, premier y=56 -> rejete=True`
+- **Cause** : Le filtre exigeait que le cube soit dans la partie basse de l'image (y >= 100), mais le cube était à y=54-56
+- **Correction** : `DEFAULT_MIN_Y_PIXEL = 100` → `0` dans `pick_and_place_node_v5.py` ligne 58
+
+### 2. Crash au shutdown (`rclpy.shutdown already called`)
+- **Symptôme** : `RCLError: failed to shutdown: rcl_shutdown already called`
+- **Cause** : Quand le nœud est tué (pkill/SIGTERM), `ExternalShutdownException` n'est pas capturée, puis `rclpy.shutdown()` est appelé 2 fois
+- **Correction** : Ajout `try/except` autour de `rclpy.shutdown()` dans :
+  - `pick_and_place_node_v5.py` (ligne ~510)
+  - `simple_color_detect_v2.py`
+  - `autonomous_mission_node.py`
+
+---
+
+## 🔧 État actuel du robot (192.168.1.30)
+
+### Nœuds actifs
 ```
-/controller/cmd_vel (Twist)
-    -> /odom_publisher (convertit Twist -> commandes moteurs)
-        -> /ros_robot_controller/set_motor (4 moteurs mecanum, rps)
-            -> /ros_robot_controller (hardware)
-                -> MOTEURS (fonctionnent!)
-```
-
-### Problème identifié : voice_control_move ne bouge pas
-- **Node** `/voice_control_move` : écoute `/asr_node/voice_words` + `/awake_node/angle`
-- **Problème** : `/awake_node` n'existe PAS (0 publishers sur `/awake_node/angle`)
-- Le node reçoit les commandes vocales mais ne génère pas de mouvement
-- **Cause probable** : signal de réveil manquant (robot "endormi")
-
-### Test : publication directe sur /controller/cmd_vel
-- ✅ **FONCTIONNE** : robot avance à 0.3 m/s, odometry augmente
-- ✅ Moteurs : 4x rps ~1.19 pour avancer
-- ✅ Stop : rps = 0
-
-## Pont vocal LLM -> Robot (NOUVEAU)
-
-### Fichier créé : `speech_patch/voice_bridge.py`
-
-Architecture :
-```
-Texte/Voix -> Ollama (PC, qwen3.5:9b, prompt FR)
-           -> JSON {"action": "forward/backward/left/right/stop", "response": "..."}
-           -> rosbridge WebSocket (ws://192.168.1.30:9090)
-           -> /controller/cmd_vel (Twist)
-           -> Robot bouge!
+/pick_and_place_node_v5    ✅ (corrigé, ne crash plus)
+/simple_color_detect       ✅ (détecte cube rouge, publie /color_detect_node/color_info)
+/autonomous_mission_node   ✅
+/robot_watchdog            ✅ (PID 9315)
+/tts_node                  ✅
+/ros_robot_controller      ✅ (moteurs)
+/aurora                    ✅ (caméra depth)
+/llm_move_bridge           ✅
 ```
 
-### Tests effectués (18/10 ~14h30)
+### Détection couleur (test OK)
+```
+color: red
+x: 338, y: 140  (centre image = 320, 200)
+width: 50, height: 54, radius: 27
+```
 
-| Commande | LLM réponse | Action | Robot |
-|----------|-------------|--------|-------|
-| "Avance" | "J'avance." | forward | ✅ Avance 0.6m |
-| "Tourne à gauche" | "Je tourne à gauche." | left | ✅ Tourne |
-| "Stop" | "Je m'arrête." | stop | ✅ Stop |
+### Paramètres pick-and-place v5 (à calibrer)
+| Paramètre | Valeur actuelle | Description |
+|-----------|-----------------|-------------|
+| `camera_to_gripper_offset` | 0.10 m (10 cm) | **À MESURER** distance caméra→pince |
+| `gripper_reach` | 0.15 m (15 cm) | Distance caméra→cube idéale |
+| `target_size_px` | 80 px | Taille cible du cube |
+| `min_y_pixel` | 0 (corrigé) | Filtre Y (0 = accepte tout) |
+| `linear_speed` | 0.10 m/s | Vitesse avance |
+| `angular_speed` | 0.5 rad/s | Vitesse rotation |
+| `use_depth` | true | Utilise caméra depth |
 
-### Usage
+---
 
+## 🎯 Problème en cours : Calibration pick-and-place
+
+**Symptôme** : Le robot bouge à droite/gauche du cube, descend le bras dans le vide, annonce "cube attrapé" alors que non.
+
+**Cause probable** : `camera_to_gripper_offset` mal calibré (distance caméra-pince inconnue).
+
+### Procédure de calibration (voir GUIDE_CALIBRATION_RAPIDE.md)
+
+1. **Mesurer** la distance caméra→pince au mètre (bras en position prêt)
+2. **Appliquer** : `ros2 param set /pick_and_place_node_v5 camera_to_gripper_offset <valeur>`
+3. **Tester** avec cube à 20 cm, ajuster `gripper_reach`
+4. **Vérifier** le centrage (cube à x=320 quand devant le robot)
+
+### Commandes utiles
 ```bash
-# Test simple
-python3 speech_patch/voice_bridge.py "Avance"
+# Voir position cube en temps réel
+ssh robot "bash -lc 'source /opt/ros/humble/setup.bash && source /home/ubuntu/ros2_ws/install/setup.bash && ros2 topic echo /color_detect_node/color_info'"
 
-# Mode interactif
-python3 speech_patch/voice_bridge.py --interactive
+# Modifier un paramètre
+ssh robot "bash -lc 'source /opt/ros/humble/setup.bash && source /home/ubuntu/ros2_ws/install/setup.bash && ros2 param set /pick_and_place_node_v5 camera_to_gripper_offset 0.08'"
 
-# Avec durée personnalisée
-python3 speech_patch/voice_bridge.py "Recule" --duration 3
+# Redémarrer pick-and-place (avec nouveaux paramètres)
+ssh robot "pkill -f pick_and_place_node; sleep 1; bash -lc 'source /opt/ros/humble/setup.bash && source /home/ubuntu/ros2_ws/install/setup.bash && setsid nohup python3 /home/ubuntu/speech_patch/pick_and_place_node_v5.py --ros-args -p use_depth:=true -p min_y_pixel:=0 >/tmp/pick_v5.log 2>&1 < /dev/null & disown'"
+
+# Voir les logs
+ssh robot "tail -f /tmp/pick_v5.log"
 ```
 
-### Configuration (variables d'environnement)
+---
 
-| Variable | Défaut | Description |
-|----------|--------|-------------|
-| `OLLAMA_URL` | `http://192.168.1.20:11434` | URL Ollama PC |
-| `OLLAMA_MODEL` | `qwen3.5:9b` | Modèle LLM |
-| `ROBOT_WS` | `ws://192.168.1.30:9090` | WebSocket rosbridge robot |
+## 🖥️ Interface Web et raccourcis Bureau
 
-## Prochaines étapes
+### Raccourcis sur le Bureau (C:\Users\bloiz\OneDrive\Desktop)
+| Fichier | Description |
+|---------|-------------|
+| `Deployer Robot.lnk` | Transfère fichiers + lance nœuds (deploy_all.sh) |
+| `Interface Web.lnk` | Lance serveur web (python -m http.server 8888) |
+| `Robot Interface Web.url` | Ouvre http://localhost:8888/robot_keypad.html |
+| `Calibrer Pick.bat` | Calibration interactive (ancien) |
 
-### Court terme (fonctionnel maintenant)
-1. ✅ Pont vocal texte -> mouvement (voice_bridge.py)
-2. ⬜ Ajouter TTS (réponse vocale du robot)
-3. ⬜ Connecter ASR robot (/asr_node/voice_words) au pont
-4. ⬜ Tester commandes complètes : voix -> LLM -> mouvement + TTS
+### Adresse interface web
+**http://localhost:8888/robot_keypad.html**
 
-### Moyen terme (nécessite SSH/NoMachine)
-1. ⬜ Déployer speech_patch (ASR/TTS français sur robot)
-2. ⬜ Corriger /awake_node manquant (firmware)
-3. ⬜ Lancer llm_control_move.launch.py avec patch
+### Commandes clavier
+| Touche | Action |
+|--------|--------|
+| ZQSD / flèches | Déplacer |
+| ESPACE | Stop urgence |
+| P | Attrape cube (direct) |
+| C | Scan 360° + attrape |
+| M | Mission autonome (tous les cubes) |
+| R | Patrouille 2 min |
+| B | Retour base |
+| S | Status vocal |
 
-### Hardware à vérifier
-- Batterie : pas de messages sur /ros_robot_controller/battery
-- `ros_robot_controller` : 0 paramètres (initialisation partielle?)
-- `校验失败` (checksum failed) signalé précédemment
+---
 
-## Fichiers créés/modifiés cette session
+## 📁 Fichiers créés/modifiés cette session
 
-- `speech_patch/voice_bridge.py` — Pont vocal LLM -> rosbridge (227 lignes)
-- `ETAT_PROJET_SESSION.md` — Ce fichier
+### Modifiés (corrections bugs)
+- `speech_patch/pick_and_place_node_v5.py` — fix shutdown + min_y_pixel=0
+- `speech_patch/simple_color_detect_v2.py` — fix shutdown
+- `speech_patch/autonomous_mission_node.py` — fix shutdown
+- `speech_patch/voice_bridge.py` — inversion vitesses (session précédente)
+- `speech_patch/start_depth_camera.sh` — refonte (session précédente)
 
-## Commandes utiles
+### Nouveaux fichiers
+- `speech_patch/deploy_all.sh` — Script déploiement tout-en-un (résout les blocages SSH)
+- `speech_patch/calibrate_pick_v5.py` — Calibration interactive WebSocket
+- `speech_patch/robot_params_backup.txt` — Backup paramètres robot
+- `GUIDE_CALIBRATION_RAPIDE.md` — Guide calibration pick-and-place
+- `GUIDE_AUTONOME_COMPLET.md` — Doc système autonome complet
+- `GUIDE_CALIBRATION_PICK.md` — Doc calibration (ancien)
+- `GUIDE_PICK_V3.md` — Doc pick-and-place v3
 
+### Raccourcis Bureau (OneDrive/Desktop)
+- `Deployer Robot.bat` / `.lnk`
+- `Interface Web.bat` / `.lnk`
+- `Robot Interface Web.url`
+
+---
+
+## 🚀 Pour reprendre la prochaine fois
+
+### 1. Vérifier que le robot est allumé
 ```bash
-# Vérifier robot en vie
 ping 192.168.1.30
+ssh robot "echo OK"
+```
 
-# Lister topics/nœuds via rosbridge
-python3 -c "
-import websocket, json
-ws = websocket.create_connection('ws://192.168.1.30:9090')
-ws.send(json.dumps({'op':'call_service','service':'/rosapi/topics','args':{},'id':'1'}))
-print(json.loads(ws.recv())['values']['topics'])
-"
+### 2. Lancer les nœuds (si pas déjà fait)
+Double-clic sur **Deployer Robot.lnk** sur le Bureau
+
+### 3. Ouvrir l'interface web
+Double-clic sur **Robot Interface Web.url** sur le Bureau
+→ http://localhost:8888/robot_keypad.html
+
+### 4. Continuer la calibration pick-and-place
+Suivre **GUIDE_CALIBRATION_RAPIDE.md** :
+1. Mesurer offset caméra-pince
+2. Ajuster `camera_to_gripper_offset`
+3. Tester avec cube à 20 cm
+4. Ajuster `gripper_reach`
+
+### 5. Commandes rapides SSH
+```bash
+# État des nœuds
+ssh robot "bash -lc 'source /opt/ros/humble/setup.bash && source /home/ubuntu/ros2_ws/install/setup.bash && ros2 node list'"
+
+# Logs pick-and-place
+ssh robot "tail -f /tmp/pick_v5.log"
+
+# Détection couleur
+ssh robot "bash -lc 'source /opt/ros/humble/setup.bash && source /home/ubuntu/ros2_ws/install/setup.bash && ros2 topic echo /color_detect_node/color_info --once'"
 
 # Test mouvement manuel
-python3 -c "
-import websocket, json, time
-ws = websocket.create_connection('ws://192.168.1.30:9090')
-ws.send(json.dumps({'op':'publish','topic':'/controller/cmd_vel','msg':{'linear':{'x':0.3,'y':0,'z':0},'angular':{'x':0,'y':0,'z':0}}}))
-time.sleep(2)
-ws.send(json.dumps({'op':'publish','topic':'/controller/cmd_vel','msg':{'linear':{'x':0,'y':0,'z':0},'angular':{'x':0,'y':0,'z':0}}}))
-"
-
-# Pont vocal
 python3 speech_patch/voice_bridge.py "Avance"
 ```
+
+---
+
+## 📊 Architecture du système
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│   PC (Windows)  │────▶│  Ollama LLM     │────▶│  Interprétation  │
+│  Interface Web  │     │  (192.168.1.20) │     │  commandes FR   │
+│  localhost:8888 │     └─────────────────┘     └─────────────────┘
+└─────────────────┘              │
+                                 ▼
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│  Robot (ARM)    │◀────│  rosbridge WS   │◀────│  voice_bridge   │
+│  192.168.1.30   │     │  (port 9090)    │     │  (PC ou robot)  │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+        │
+        ├── /ros_robot_controller  (moteurs)
+        ├── /aurora                 (caméra depth)
+        ├── /simple_color_detect    (détection cube rouge)
+        ├── /pick_and_place_node_v5 (pick-and-place)
+        ├── /autonomous_mission_node (mission multi-cubes)
+        ├── /robot_watchdog         (auto-réparation)
+        ├── /tts_node               (synthèse vocale)
+        └── /gripper_controller     (bras/pince)
+```
+
+---
+
+## ⚠️ Points d'attention
+
+1. **Toujours sourcer ROS2** : `source /opt/ros/humble/setup.bash && source /home/ubuntu/ros2_ws/install/setup.bash`
+2. **Paramètres non persistants** : Les `ros2 param set` sont perdus au redémarrage du nœud. Soit modifier le code, soit passer les params en ligne de commande.
+3. **Ne pas lancer plusieurs fois** le même nœud (tuer avant : `pkill -f nom_du_noeud`)
+4. **Le Bureau est sur OneDrive** : `C:\Users\bloiz\OneDrive\Desktop` (pas `C:\Users\bloiz\Desktop`)
