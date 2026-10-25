@@ -814,15 +814,119 @@ class OfflineRealTimeTTS:
         except Exception:
             pass
 
+    @staticmethod
+    def _clean_text_for_tts(text):
+        """Nettoie le texte pour eviter les crashes ONNX du modele VITS.
+
+        Le modele vits-piper-fr_FR-siwis-medium plante sur certaines
+        sequences (ponctuation collee ou espacee, texte trop court, etc.).
+        Cette fonction normalise le texte pour maximiser les chances de succes.
+        """
+        import re
+        if not text:
+            return text
+        # Normaliser les espaces
+        text = text.strip()
+        # Typographie francaise : espace avant ! ? : ;
+        text = re.sub(r'\s*([!?:;])\s*', r' \1 ', text)
+        # Espaces multiples -> simple
+        text = re.sub(r'\s+', ' ', text).strip()
+        # Point final si absent (aide le modele)
+        if text and text[-1] not in '.!?':
+            text += '.'
+        return text
+
     def _synthesize_and_play(self, text):
+        """Synthetise via subprocess avec timeout pour eviter les hangs ONNX."""
+        import subprocess
+        import tempfile
+        import os
+
         with self._lock:
             self._playing = True
         try:
-            audio = self._tts.generate(text, sid=self.speaker_id, speed=self.speed)
-            self._play_samples(audio.samples, int(audio.sample_rate))
-        except Exception as e:
-            print("[OfflineRealTimeTTS] Erreur synthese: %s" % e)
-            print("[OfflineRealTimeTTS] Texte: %s" % text[:80])
+            clean = self._clean_text_for_tts(text)
+            if not clean:
+                return
+
+            # Script de synthese a executer en subprocess
+            synth_script = (
+                "import sys;"
+                "sys.path.insert(0, '/home/ubuntu/.local/lib/python3.10/site-packages');"
+                "from speech.speech_offline_patch import OfflineRealTimeTTS;"
+                "import wave, numpy as np;"
+                "tts = OfflineRealTimeTTS(language='fr');"
+                "audio = tts._tts.generate(sys.argv[1], sid=0, speed=1.0);"
+                "s = (np.array(audio.samples, dtype=np.float32) * 32767).astype(np.int16);"
+                "wf = wave.open(sys.argv[2], 'wb');"
+                "wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(int(audio.sample_rate));"
+                "wf.writeframes(s.tobytes()); wf.close()"
+            )
+
+            # Creer un fichier WAV temporaire
+            fd, wav_path = tempfile.mkstemp(suffix='.wav', dir='/tmp')
+            os.close(fd)
+            os.unlink(wav_path)  # le subprocess va le creer
+
+            # Tentative 1 : texte nettoye
+            try:
+                result = subprocess.run(
+                    ['python3', '-u', '-c', synth_script, clean, wav_path],
+                    capture_output=True, timeout=15,
+                )
+                if result.returncode == 0 and os.path.exists(wav_path) and os.path.getsize(wav_path) > 44:
+                    self.play_file(wav_path)
+                    os.unlink(wav_path)
+                    return
+                else:
+                    print("[OfflineRealTimeTTS] Echec subprocess (rc=%d): %s" % (result.returncode, result.stderr.decode('utf-8', errors='replace')[:150]))
+            except subprocess.TimeoutExpired:
+                print("[OfflineRealTimeTTS] Timeout synthese (texte nettoye), texte: %s" % clean[:60])
+            except Exception as e:
+                print("[OfflineRealTimeTTS] Erreur subprocess: %s" % str(e)[:100])
+
+            # Tentative 2 : sans ponctuation
+            import re
+            no_punct = re.sub(r'[!?:;.,]', '', clean).strip()
+            if no_punct and no_punct != clean:
+                try:
+                    result = subprocess.run(
+                        ['python3', '-u', '-c', synth_script, no_punct, wav_path],
+                        capture_output=True, timeout=15,
+                    )
+                    if result.returncode == 0 and os.path.exists(wav_path) and os.path.getsize(wav_path) > 44:
+                        self.play_file(wav_path)
+                        os.unlink(wav_path)
+                        return
+                except subprocess.TimeoutExpired:
+                    print("[OfflineRealTimeTTS] Timeout synthese (sans ponctuation)")
+                except Exception as e:
+                    print("[OfflineRealTimeTTS] Erreur subprocess 2: %s" % str(e)[:100])
+
+            # Tentative 3 : texte brut original
+            if text != clean:
+                try:
+                    result = subprocess.run(
+                        ['python3', '-u', '-c', synth_script, text, wav_path],
+                        capture_output=True, timeout=15,
+                    )
+                    if result.returncode == 0 and os.path.exists(wav_path) and os.path.getsize(wav_path) > 44:
+                        self.play_file(wav_path)
+                        os.unlink(wav_path)
+                        return
+                except subprocess.TimeoutExpired:
+                    print("[OfflineRealTimeTTS] Timeout synthese (texte brut)")
+                except Exception as e:
+                    print("[OfflineRealTimeTTS] Erreur subprocess 3: %s" % str(e)[:100])
+
+            # Nettoyage
+            try:
+                if os.path.exists(wav_path):
+                    os.unlink(wav_path)
+            except:
+                pass
+
+            print("[OfflineRealTimeTTS] Toutes les tentatives ont echoue. Texte: %s" % text[:80])
         finally:
             with self._lock:
                 self._playing = False

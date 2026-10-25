@@ -109,6 +109,9 @@ class LLMMoveBridge(Node):
         if not text:
             return
         self.get_logger().info(f'ASR: "{text}"')
+        if not text:
+            return
+        self.get_logger().info(f'ASR: "{text}"')
 
         text_lower = text.lower()
 
