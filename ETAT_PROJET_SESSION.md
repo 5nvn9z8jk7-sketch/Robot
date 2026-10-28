@@ -340,3 +340,40 @@ ssh robot "bash -lc 'source /opt/ros/humble/setup.bash && source /home/ubuntu/ro
 # Stop urgence
 ssh robot "bash -lc 'source /opt/ros/humble/setup.bash && source /home/ubuntu/ros2_ws/install/setup.bash && ros2 topic pub --once /controller/cmd_vel geometry_msgs/msg/Twist \"{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}\"'"
 ```
+
+---
+
+## Session 28/10 — Clavier crabe + bras + fix focus clavier
+
+### Ce qui a été fait
+- **Keypad web** (`robot_keypad.html`) : ajout complet des contrôles crabe et bras
+  - **Crabe** : `A` = gauche, `E` = droite (déplacement latéral via `linear.y`)
+  - **Bras** : `T`/`G` = épaule haut/bas, `Y`/`U` = base G/D, `F`/`H` = coude av/ar, `N` = reset
+  - Servos via topic `/servo_controller` (format `ServosPosition` en PWM)
+  - **Fix** : fusion des 2 listeners keydown en 1 seul, focus auto au clic, badge "Touche: X" debug
+  - **Fix** : `S` = reculer (AZERTY ZQSD), plus de conflit avec mission "status"
+
+### Touches clavier (AZERTY)
+| Touche | Action |
+|--------|--------|
+| Z Q S D / ↑↓←→ | Déplacement |
+| A E | Crabe G/D |
+| Espace | Stop |
+| 0-9 | Commandes numériques |
+| P | Pick-and-place |
+| C | Scan 360 |
+| O | Pince (ouvre/ferme) |
+| M R B | Mission / Patrouille / Base |
+| T G | Épaule haut/bas |
+| Y U | Base gauche/droite |
+| F H | Coude avant/arrière |
+| N | Reset bras |
+
+### Important
+- **Cliquer sur la page d'abord** pour activer le clavier (badge "Touche:" en haut)
+- Rafraîchir avec **Ctrl+F5** pour avoir la dernière version
+- Serveur web : `python -m http.server 8888` dans `speech_patch/`
+
+### Commits
+- `6af806f` — feat: crabe (A/E) + contrôle bras (T/G/Y/U/F/H/N)
+- `18abd80` — fix: un seul listener clavier + indicateur touche + focus auto
