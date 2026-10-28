@@ -37,6 +37,7 @@ import time
 import numpy as np
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import String
 from geometry_msgs.msg import Twist
@@ -332,7 +333,7 @@ class PickAndPlaceNodeV4(Node):
     def _center_cube(self, cube):
         fx = float(self._get_param('fx'))
         cx = float(self._get_param('cx'))
-        angle_rad = math.atan2(cube.x - cx, fx)
+        angle_rad = math.atan2(cx - cube.x, fx)
         if abs(angle_rad) >= ANGLE_DEADZONE:
             self._say("Je me tourne vers le cube.")
             self._turn_to(angle_rad)
@@ -340,7 +341,7 @@ class PickAndPlaceNodeV4(Node):
             new_cube = self._get_red_cube(timeout=2.0)
             if new_cube:
                 cube = new_cube
-                angle_rad = math.atan2(cube.x - cx, fx)
+                angle_rad = math.atan2(cx - cube.x, fx)
                 if abs(angle_rad) >= ANGLE_DEADZONE:
                     self._turn_to(angle_rad)
                     time.sleep(0.3)
@@ -503,7 +504,7 @@ def main(args=None):
     node = PickAndPlaceNodeV4()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()
