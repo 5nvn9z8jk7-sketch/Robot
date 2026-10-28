@@ -34,6 +34,7 @@ import time
 import json
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import String, UInt16
 from geometry_msgs.msg import Twist
@@ -430,7 +431,7 @@ class AutonomousMissionNode(Node):
             with self._lock:
                 info = self._latest_color_info
             if info and len(info.data) > 0:
-                reds = [ci for ci in info.data if ci.color == 'red' and ci.y >= 200]
+                reds = [ci for ci in info.data if ci.color == 'red' and ci.y >= 0]
                 for c in reds:
                     size = c.width * c.height
                     if size > best_size:
@@ -443,9 +444,9 @@ class AutonomousMissionNode(Node):
 
     def _center_cube(self, cube):
         """Tourne pour centrer le cube."""
-        fx = 423.376
-        cx = 319.504
-        angle_rad = math.atan2(cube.x - cx, fx)
+        fx = 211.688
+        cx = 159.752
+        angle_rad = math.atan2(cx - cube.x, fx)
         if abs(angle_rad) > 0.03:
             self._turn(angle_rad)
             time.sleep(0.3)
@@ -522,7 +523,7 @@ def main(args=None):
     node = AutonomousMissionNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()
