@@ -134,6 +134,7 @@
   <span class="badge disconnected" id="statusRobot">Robot: déconnecté</span>
   <span class="badge disconnected" id="statusLLM">LLM: déconnecté</span>
   <span class="badge disconnected" id="statusMotors">Moteurs: inconnu</span>
+  <span class="badge" id="statusKey" style="background:#21262d;color:#8b949e;min-width:80px;">Touche: --</span>
 </div>
 
 <div class="speed-control">
@@ -265,9 +266,14 @@
 <div class="tts-box" id="ttsBox"></div>
 <div class="log" id="logBox"></div>
 
-<div class="hint">
-  <kbd>↑↓←→</kbd>/<kbd>ZQSD</kbd> déplace — <kbd>A</kbd>/<kbd>E</kbd> crabe G/D — <kbd>0-9</kbd> — <kbd>P</kbd> pick — <kbd>C</kbd> scan — <kbd>O</kbd> pince — <kbd>M</kbd> mission — <kbd>R</kbd> patrouille — <kbd>B</kbd> base — <kbd>S</kbd> status — <kbd>ESPACE</kbd> stop<br>
-  <b>Bras:</b> <kbd>T</kbd>/<kbd>G</kbd> épaule haut/bas — <kbd>Y</kbd>/<kbd>U</kbd> base G/D — <kbd>F</kbd>/<kbd>H</kbd> coude av/ar — <kbd>N</kbd> reset bras
+<div class="hint" style="font-size:0.9em; line-height:1.8;">
+  <b>🖱️ Clique sur la page d'abord</b> pour activer le clavier<br>
+  <kbd>Z</kbd><kbd>Q</kbd><kbd>S</kbd><kbd>D</kbd> ou <kbd>↑↓←→</kbd> = déplacer |
+  <kbd>A</kbd><kbd>E</kbd> = crabe G/D |
+  <kbd>ESPACE</kbd> = stop<br>
+  <kbd>0-9</kbd> — <kbd>P</kbd> pick — <kbd>C</kbd> scan — <kbd>O</kbd> pince<br>
+  <kbd>M</kbd> mission — <kbd>R</kbd> patrouille — <kbd>B</kbd> base<br>
+  <b>Bras:</b> <kbd>T</kbd>/<kbd>G</kbd> épaule ↑↓ — <kbd>Y</kbd>/<kbd>U</kbd> base ←→ — <kbd>F</kbd>/<kbd>H</kbd> coude ←→ — <kbd>N</kbd> reset
 </div>
 
 <script>
@@ -546,28 +552,66 @@ function resetArm() {
   log('[N] Bras -> position initiale', 'ok');
 }
 
+// === CLAVIER UNIQUE (toutes les touches) ===
 document.addEventListener('keydown', (e) => {
-  // Flèches directionnelles (AZERTY friendly)
+  // Debug: afficher la touche pressée dans le badge
+  var keyBadge = document.getElementById('statusKey');
+  if (keyBadge) keyBadge.textContent = 'Touche: ' + e.key;
+
+  // Flèches directionnelles
   if (e.key === 'ArrowUp')    { e.preventDefault(); sendCmd(8); return; }
   if (e.key === 'ArrowDown')  { e.preventDefault(); sendCmd(2); return; }
   if (e.key === 'ArrowLeft')  { e.preventDefault(); sendCmd(4); return; }
   if (e.key === 'ArrowRight') { e.preventDefault(); sendCmd(6); return; }
-  // Touches AZERTY ZQSD
-  if (e.key === 'z' || e.key === 'Z') { sendCmd(8); return; }
-  // S = Status (voir second listener). Utiliser Fleche Down ou 2 pour reculer.
-  if (e.key === 'q' || e.key === 'Q') { sendCmd(4); return; }
-  if (e.key === 'd' || e.key === 'D') { sendCmd(6); return; }
-  // Touches numériques
-  const num = parseInt(e.key);
-  if (!isNaN(num) && num >= 0 && num <= 9) {
-    if (CMDS[num]) sendCmd(num);
-    else if (VOICE_CMDS[num]) sendVoice(num);
-  }
-  if (e.key === 'p' || e.key === 'P') { e.preventDefault(); sendPick(); }
-  if (e.key === 'c' || e.key === 'C') { e.preventDefault(); sendScan(); return; }
-  if (e.key === 'o' || e.key === 'O') { e.preventDefault(); sendGripper(); return; }
+
+  // ZQSD (AZERTY) = déplacement (comme WASD en QWERTY)
+  if (e.key === 'z' || e.key === 'Z') { e.preventDefault(); sendCmd(8); return; }
+  if (e.key === 'q' || e.key === 'Q') { e.preventDefault(); sendCmd(4); return; }
+  if (e.key === 's' || e.key === 'S') { e.preventDefault(); sendCmd(2); return; }
+  if (e.key === 'd' || e.key === 'D') { e.preventDefault(); sendCmd(6); return; }
+
+  // ESPACE = stop immédiat
   if (e.key === ' ' || e.key === 'Spacebar') { e.preventDefault(); sendCmd(0); return; }
+
+  // Touches numériques 0-9
+  var num = parseInt(e.key);
+  if (!isNaN(num) && num >= 0 && num <= 9) {
+    if (CMDS[num]) { sendCmd(num); return; }
+    if (VOICE_CMDS[num]) { sendVoice(num); return; }
+  }
+
+  // P = pick-and-place (attraper le cube)
+  if (e.key === 'p' || e.key === 'P') { e.preventDefault(); sendPick(); return; }
+
+  // C = scan 360 (cherche le cube)
+  if (e.key === 'c' || e.key === 'C') { e.preventDefault(); sendScan(); return; }
+
+  // O = pince (ouvre/ferme)
+  if (e.key === 'o' || e.key === 'O') { e.preventDefault(); sendGripper(); return; }
+
+  // === CRABE (déplacement latéral sans tourner) ===
+  if (e.key === 'a' || e.key === 'A') { e.preventDefault(); sendCmd('A'); return; }
+  if (e.key === 'e' || e.key === 'E') { e.preventDefault(); sendCmd('E'); return; }
+
+  // === MISSIONS ===
+  if (e.key === 'm' || e.key === 'M') { e.preventDefault(); sendMission('mission attrape tous les cubes'); return; }
+  if (e.key === 'r' || e.key === 'R') { e.preventDefault(); sendMission('patrouille'); return; }
+  if (e.key === 'b' || e.key === 'B') { e.preventDefault(); sendMission('retourne a la base'); return; }
+
+  // === BRAS (servos directs) ===
+  if (e.key === 't' || e.key === 'T') { e.preventDefault(); moveServo(2, 50); return; }
+  if (e.key === 'g' || e.key === 'G') { e.preventDefault(); moveServo(2, -50); return; }
+  if (e.key === 'y' || e.key === 'Y') { e.preventDefault(); moveServo(1, -50); return; }
+  if (e.key === 'u' || e.key === 'U') { e.preventDefault(); moveServo(1, 50); return; }
+  if (e.key === 'f' || e.key === 'F') { e.preventDefault(); moveServo(3, -50); return; }
+  if (e.key === 'h' || e.key === 'H') { e.preventDefault(); moveServo(3, 50); return; }
+  if (e.key === 'n' || e.key === 'N') { e.preventDefault(); resetArm(); return; }
 });
+
+// S'assurer que la page a le focus clavier
+document.body.setAttribute('tabindex', '0');
+document.body.focus();
+document.addEventListener('click', function() { document.body.focus(); });
 
 function updateSpeed() {
   speed = parseFloat(document.getElementById('speedSlider').value);
@@ -628,31 +672,9 @@ function joyStop() {
   publishCmdVel(0, 0, 0);
 }
 
-// Raccourcis clavier mission
-// M = mission, R = patrouille, B = base, S = status
-
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'm' || e.key === 'M') { e.preventDefault(); sendMission('mission attrape tous les cubes'); }
-  if (e.key === 'r' || e.key === 'R') { e.preventDefault(); sendMission('patrouille'); }
-  if (e.key === 'b' || e.key === 'B') { e.preventDefault(); sendMission('retourne a la base'); }
-  if (e.key === 's' || e.key === 'S') { e.preventDefault(); sendMission('status'); }
-  if (e.key === 'o' || e.key === 'O') { e.preventDefault(); sendGripper(); }
-  // Crab movement (lateral strafe)
-  if (e.key === 'a' || e.key === 'A') { e.preventDefault(); sendCmd('A'); }
-  if (e.key === 'e' || e.key === 'E') { e.preventDefault(); sendCmd('E'); }
-  // Arm servo control
-  if (e.key === 't' || e.key === 'T') { e.preventDefault(); moveServo(2, 50); }
-  if (e.key === 'g' || e.key === 'G') { e.preventDefault(); moveServo(2, -50); }
-  if (e.key === 'y' || e.key === 'Y') { e.preventDefault(); moveServo(1, -50); }
-  if (e.key === 'u' || e.key === 'U') { e.preventDefault(); moveServo(1, 50); }
-  if (e.key === 'f' || e.key === 'F') { e.preventDefault(); moveServo(3, -50); }
-  if (e.key === 'h' || e.key === 'H') { e.preventDefault(); moveServo(3, 50); }
-  if (e.key === 'n' || e.key === 'N') { e.preventDefault(); resetArm(); }
-});
-
 connectRobot();
 checkLLM();
-log('Interface prete - 0-9, ZQSD(fleches), A/E=crabe, P=pick, C=scan, O=pince, M=mission, R=patrouille, B=base, S=status, T/G/Y/U/F/H=bras, N=reset', 'cmd');
+log('Clique sur la page puis clavier: ZQSD=deplace, A/E=crabe, ESPACE=stop, P=pick, C=scan, O=pince, M/R/B=missions, T/G=epaule, Y/U=base, F/H=coude, N=reset', 'ok');
 </script>
 </body>
 </html>
