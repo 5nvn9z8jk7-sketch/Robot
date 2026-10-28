@@ -61,6 +61,7 @@ DEFAULT_TARGET_SIZE_PX = 80      # fallback: taille cible en pixels
 DEFAULT_DISTANCE_TOLERANCE = 0.02  # ±2cm
 DEFAULT_USE_DEPTH = True         # utiliser depth si disponible
 DEFAULT_CAM_TO_GRIPPER = 0.10    # offset camera -> pince (m)
+DEFAULT_CAMERA_LATERAL = 0.0     # offset lateral camera vs pince (m, 0 = desactive par defaut)
 
 DEFAULT_FX = 211.688
 DEFAULT_FY = 212.087
@@ -99,6 +100,8 @@ class PickAndPlaceNodeV4(Node):
         self.declare_parameter('distance_tolerance', DEFAULT_DISTANCE_TOLERANCE)
         self.declare_parameter('use_depth', DEFAULT_USE_DEPTH)
         self.declare_parameter('camera_to_gripper_offset', 0.10)  # distance camera -> pince (m)
+        self.declare_parameter('camera_lateral_offset', 0.0)    # offset lateral camera vs pince (m, 0 = desactive)
+        self.declare_parameter('simple_grip', True)  # mode semi-auto: pas d'ajustement distance, grip direct
         self.declare_parameter('use_custom_grip', True)  # sequence servo directe au lieu de voice_pick
         self.declare_parameter('fx', DEFAULT_FX)
         self.declare_parameter('fy', DEFAULT_FY)
@@ -255,20 +258,31 @@ class PickAndPlaceNodeV4(Node):
         """
         use_depth = self._get_param('use_depth')
 
-        # Essayer depth d'abord
-        if use_depth:
-            depth_mm = self._get_depth_at(cube.x, cube.y)
-            if depth_mm is not None:
-                return depth_mm / 1000.0, 'depth'
-
-        # Fallback: estimation par taille
+        # Estimation par taille (primaire — plus fiable que depth sur cette camera)
         target_size = float(self._get_param('target_size_px'))
         gripper_reach = float(self._get_param('gripper_reach'))
         current_size = (cube.width + cube.height) / 2.0
         if current_size > 0:
-            # Estimation: distance ≈ gripper_reach * (target_size / current_size)
             est_dist = gripper_reach * (target_size / current_size)
+            # Utiliser depth seulement pour valider/cooriger si tres different
+            if use_depth:
+                depth_mm = self._get_depth_at(cube.x, cube.y)
+                if depth_mm is not None:
+                    depth_dist = depth_mm / 1000.0
+                    # Si depth et estimate sont coherents (±30%), prendre la moyenne
+                    if 0.7 < est_dist / depth_dist < 1.4:
+                        avg = (est_dist + depth_dist) / 2.0
+                        return avg, 'size+depth'
+                    else:
+                        # Depth peu fiable, garder l'estimation
+                        return est_dist, 'estimate'
             return est_dist, 'estimate'
+
+        # Fallback: depth seul
+        if use_depth:
+            depth_mm = self._get_depth_at(cube.x, cube.y)
+            if depth_mm is not None:
+                return depth_mm / 1000.0, 'depth'
 
         return None, 'none'
 
@@ -331,8 +345,12 @@ class PickAndPlaceNodeV4(Node):
         return None
 
     def _center_cube(self, cube):
+        """Centre le cube puis compense l'offset lateral camera/pince."""
         fx = float(self._get_param('fx'))
         cx = float(self._get_param('cx'))
+        lateral = float(self._get_param('camera_lateral_offset'))
+
+        # 1. Centrage classique
         angle_rad = math.atan2(cx - cube.x, fx)
         if abs(angle_rad) >= ANGLE_DEADZONE:
             self._say("Je me tourne vers le cube.")
@@ -346,6 +364,25 @@ class PickAndPlaceNodeV4(Node):
                     self._turn_to(angle_rad)
                     time.sleep(0.3)
                     cube = self._get_red_cube(timeout=2.0) or cube
+
+        # 2. Compensation offset lateral camera -> pince
+        # La camera est decalee lateralement par rapport a la pince.
+        # Apres centrage, on tourne encore pour aligner la PINCE avec le cube.
+        if abs(lateral) > 0.01:
+            dist, _ = self._get_distance(cube)
+            if dist is None or dist < 0.1:
+                dist = 0.30  # fallback
+            # Angle supplementaire: atan(lateral / dist)
+            # Si camera a gauche (+), il faut tourner a droite (-) pour aligner la pince
+            extra_angle = -math.atan2(lateral, dist)
+            if abs(extra_angle) >= ANGLE_DEADZONE:
+                self.get_logger().info(
+                    f'  Compensation laterale: {math.degrees(extra_angle):+.1f}° '
+                    f'(offset={lateral*100:.0f}cm, dist={dist*100:.0f}cm)')
+                self._turn_to(extra_angle)
+                time.sleep(0.2)
+                cube = self._get_red_cube(timeout=2.0) or cube
+
         return cube
 
     def _adjust_distance(self, cube):
@@ -458,11 +495,14 @@ class PickAndPlaceNodeV4(Node):
                 self._say("J'ai perdu le cube.")
                 return
 
-            # 3. Ajuster distance
-            cube = self._adjust_distance(cube)
-            if cube is None:
-                self._say("Je n'arrive pas a me placer. Reessaie.")
-                return
+            # 3. Ajuster distance (skip en mode simple_grip)
+            if self._get_param('simple_grip'):
+                self.get_logger().info('  Mode semi-auto: grip direct sans ajustement distance')
+            else:
+                cube = self._adjust_distance(cube)
+                if cube is None:
+                    self._say("Je n'arrive pas a me placer. Reessaie.")
+                    return
 
             # 4. Vérification finale
             dist, source = self._get_distance(cube)
