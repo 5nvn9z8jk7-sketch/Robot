@@ -210,3 +210,133 @@ python3 speech_patch/voice_bridge.py "Avance"
 2. **Paramètres non persistants** : Les `ros2 param set` sont perdus au redémarrage du nœud. Soit modifier le code, soit passer les params en ligne de commande.
 3. **Ne pas lancer plusieurs fois** le même nœud (tuer avant : `pkill -f nom_du_noeud`)
 4. **Le Bureau est sur OneDrive** : `C:\Users\bloiz\OneDrive\Desktop` (pas `C:\Users\bloiz\Desktop`)
+
+---
+
+# 📋 SESSION 28/10/2026 — Reprise projet, 3 bugs critiques corriges
+
+## Résumé exécutif
+
+Reprise du projet apres redemarrage robot. **3 bugs majeurs identifies et corriges** :
+le robot ne pouvait pas attraper le cube a cause d'un probleme de coordonnees, d'un signe de rotation inverse, et de conflits de publishers cmd_vel.
+
+---
+
+## 🐛 Bugs corrigés
+
+### 1. Coordonnées couleur : mauvaise échelle (640x400 au lieu de 320x200)
+- **Fichier** : `speech_patch/simple_color_detect_v2.py`
+- **Symptôme** : Le cube était détecté à x=342 (hors image 320px de large)
+- **Cause** : `DEPTH_WIDTH = 640` et `DEPTH_HEIGHT = 400` — la caméra depth Aurora est en **320x200**, pas 640x400
+- **Impact** : Le pick-and-place recevait des coordonnées 2x trop grandes. Un cube centré (x=160) était rapporté à x=320, faisant calculer un angle de ~40° au lieu de 0°
+- **Correction** : `DEPTH_WIDTH = 320`, `DEPTH_HEIGHT = 200`
+- **Vérification** : Cube maintenant rapporté à x=136-177 (correct, dans l'image 320x200)
+
+### 2. Signe de rotation inversé
+- **Fichier** : `speech_patch/pick_and_place_node_v5.py` (lignes 335, 343)
+- **Symptôme** : Le robot tournait à GAUCHE quand le cube était à DROITE
+- **Cause** : `angle_rad = math.atan2(cube.x - cx, fx)` donnait un angle positif (tourne à gauche en ROS) quand le cube était à droite (x > cx)
+- **Correction** : `angle_rad = math.atan2(cx - cube.x, fx)` — inversion du signe
+- **Vérification** :
+  - Cube à droite (x=177, cx=160) → Rotation **-4.7°** (droite, correct)
+  - Cube à gauche (x=136, cx=160) → Rotation **+6.4°** (gauche, correct)
+
+### 3. Crash `ExternalShutdownException` au shutdown
+- **Fichier** : `speech_patch/pick_and_place_node_v5.py` (main)
+- **Symptôme** : `rclpy.executors.ExternalShutdownException` quand la session SSH se terminait
+- **Cause** : `rclpy.spin()` leve `ExternalShutdownException` (pas `KeyboardInterrupt`) quand ROS2 est arrêté extérieurement
+- **Correction** : `except (KeyboardInterrupt, ExternalShutdownException)`
+
+---
+
+## 🔧 Problème résolu : Conflits de publishers `/controller/cmd_vel`
+
+**Découverte** : 9 nœuds publiaient sur `/controller/cmd_vel` simultanément !
+- `joystick_control`, `line_following`, `object_tracking`, `self_driving`, `lidar_app`
+- `voice_control_move`, `llm_move_bridge`, `autonomous_mission_node`, `pick_and_place_node_v5`
+
+**Conséquence** : Les commandes du pick-and-place étaient écrasées par les autres nœuds (notamment `joystick_control` qui publie des zeros en continu).
+
+**Solution** : Tuer les nœuds conflictuels avant les tests :
+```bash
+pkill -f joystick_control; pkill -f line_following; pkill -f object_tracking
+pkill -f self_driving; pkill -f lidar_controller; pkill -f voice_control_move
+pkill -f llm_move_bridge; pkill -f autonomous_mission_node; pkill -f yolo_node
+```
+
+**Note** : Le watchdog redémarre ces nœuds automatiquement. Pour les tests pick-and-place, il faut le tuer temporairement :
+```bash
+pkill -f robot_watchdog
+```
+
+---
+
+## ✅ Vérifications effectuées
+
+| Test | Résultat |
+|------|----------|
+| Ping robot | ✅ 192.168.1.30 répond |
+| SSH robot | ✅ OK |
+| Nœuds actifs | ✅ aurora, simple_color_detect, pick_and_place_node_v5, tts_node, ros_robot_controller |
+| Caméra depth | ✅ 14.7 Hz, 320x200 |
+| Détection couleur | ✅ Cube rouge détecté, coordonnées 320x200 correctes |
+| Moteurs (test direct) | ✅ 0.889m en 3s à 0.3 m/s (attendu: 0.9m, ~99%) |
+| Rotation pick-and-place | ✅ Signe correct (-4.7° droite, +6.4° gauche) |
+| Séquence complète | ✅ Le robot exécute: détection → rotation → avance → préhension |
+
+---
+
+## ⚠️ Problème restant : Ajustement de distance
+
+**Symptôme** : Lors des tests, la distance (depth) ne diminuait que de 0.2-0.4cm par avance de 6cm.
+
+**Analyse** :
+- Les moteurs fonctionnent correctement (test direct OK)
+- La rotation fonctionne correctement (fix appliqué)
+- Piste probable : le robot s'est éloigné du cube (~10m) à cause d'une commande `ros2 topic pub --rate 20` parasite qui a tourné en boucle. Les mesures de profondeur ne correspondaient plus au cube.
+
+**Prochaines étapes** :
+1. Replacer le robot face au cube (à ~30cm)
+2. Relancer un test pick-and-place
+3. Si le problème persiste, vérifier l'alignement caméra RGB/depth (offset stéréo)
+4. Calibrer `camera_to_gripper_offset` (mesure physique au mètre)
+5. Calibrer `gripper_reach` (test avec cube à 20cm)
+
+---
+
+## 📁 Fichiers modifiés cette session
+
+- `speech_patch/simple_color_detect_v2.py` — fix DEPTH_WIDTH/HEIGHT 640x400 → 320x200
+- `speech_patch/pick_and_place_node_v5.py` — fix signe rotation + catch ExternalShutdownException
+
+**Commit** : `fdc6442` — "fix: 3 bugs critiques pick-and-place v5"
+
+---
+
+## 🚀 Commandes utiles pour la prochaine session
+
+```bash
+# Vérifier que le robot est allumé
+ping 192.168.1.30 && ssh robot "echo OK"
+
+# Lancer les nœuds essentiels (sans conflits)
+ssh robot "bash /home/ubuntu/speech_patch/deploy_all.sh"
+
+# Tuer les nœuds conflictuels pour test pick-and-place
+ssh robot "pkill -f robot_watchdog; pkill -f joystick_control; pkill -f line_following; pkill -f object_tracking; pkill -f self_driving; pkill -f lidar_controller; pkill -f voice_control_move; pkill -f llm_move_bridge; pkill -f autonomous_mission_node"
+
+# Redémarrer pick-and-place (avec logs unbuffered)
+ssh robot "pkill -f pick_and_place_node; sleep 1; bash -lc 'source /opt/ros/humble/setup.bash && source /home/ubuntu/ros2_ws/install/setup.bash && nohup setsid python3 -u /home/ubuntu/speech_patch/pick_and_place_node_v5.py --ros-args -p use_depth:=true -p gripper_reach:=0.15 -p camera_to_gripper_offset:=0.10 -p min_y_pixel:=0 </dev/null >/tmp/pick_v5.log 2>&1 &'"
+
+# Tester un pick
+ssh robot "bash -lc 'source /opt/ros/humble/setup.bash && source /home/ubuntu/ros2_ws/install/setup.bash && ros2 topic pub --once /vocal_detect/asr_result std_msgs/msg/String \"{data: \\\"attrape cube\\\"}\"'"
+
+# Voir les logs
+ssh robot "tail -f /tmp/pick_v5.log"
+
+# Test de mouvement direct (vérifier moteurs)
+ssh robot "bash -lc 'source /opt/ros/humble/setup.bash && source /home/ubuntu/ros2_ws/install/setup.bash && ros2 topic pub /controller/cmd_vel geometry_msgs/msg/Twist \"{linear: {x: 0.3, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}\" --rate 20 &' # Ctrl+C après 3s"
+
+# Stop urgence
+ssh robot "bash -lc 'source /opt/ros/humble/setup.bash && source /home/ubuntu/ros2_ws/install/setup.bash && ros2 topic pub --once /controller/cmd_vel geometry_msgs/msg/Twist \"{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}\"'"
+```
