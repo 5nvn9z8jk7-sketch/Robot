@@ -468,7 +468,10 @@ function sendCmd(num) {
   if (!motorsReady) log('⚠️ Moteurs non détectés — le robot ne bougera probablement pas', 'warn');
   if (num === 5 || num === 0) {
     publishCmdVel(0, 0, 0);
-    log('[' + num + '] Arrêt immédiat', 'ok');
+    // Interrompt aussi une séquence pick-and-place en cours (pick_and_place_node_v6
+    // écoute « stop » sur /vocal_detect/asr_result et arrête bras + roues).
+    ws.send(JSON.stringify({ op: 'publish', topic: '/vocal_detect/asr_result', msg: { data: 'stop' } }));
+    log('[' + num + '] Arrêt immédiat (roues + séquence pick)', 'ok');
     return;
   }
   const linear = typeof cmd.linear === 'function' ? cmd.linear() : cmd.linear;

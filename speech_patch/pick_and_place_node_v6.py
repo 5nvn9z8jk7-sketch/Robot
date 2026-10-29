@@ -49,10 +49,24 @@ MAX_ITER = 60
 MAX_LOST = 3           # itérations consécutives sans cube avant abandon
 TURN_DEADZONE = 0.02   # rad
 
+ODOM_STALE_S = 0.5     # odom considérée perdue si aucun message depuis ce délai
+COLOR_SETTLE_S = 0.15  # ignore les détections reçues moins de 0.15 s après l'appel
+                       # (images prises pendant le mouvement précédent)
+
+# Déclenchement: un verbe d'action ET le mot « cube »/« bloc » (le seul objet que
+# ce nœud sait attraper). Les mots trop vagues (objet, balle, rouge, cherche,
+# trouve...) déclenchaient le bras en pleine conversation.
 TRIGGER_VERBS = ['attrape', 'attraper', 'ramasse', 'ramasser', 'prends', 'prendre',
-                 'saisis', 'saisir', 'cherche', 'chercher', 'trouve', 'trouver',
-                 'va chercher', 'va ramasser', 'pick', 'grab', 'scan', 'scane']
-TRIGGER_OBJECTS = ['cube', 'objet', 'balle', 'rouge', 'red', 'block', 'bloc', 'boîte', 'boite']
+                 'saisis', 'saisir', 'va chercher', 'pick', 'grab']
+TRIGGER_OBJECTS = ['cube', 'bloc', 'block']
+# Ces phrases appartiennent à autonomous_mission_node (« attrape tous les cubes »):
+# sans cette exclusion, les deux nœuds démarraient en même temps (conflit roues + bras).
+MISSION_WORDS = ['tous', 'tout', 'mission', 'collecte', 'pick all']
+
+# Arrêt d'urgence: un de ces mots sur /vocal_detect/asr_result interrompt
+# immédiatement la séquence en cours (voix, ou touche 0/ESPACE du keypad web).
+STOP_WORDS = ['stop', 'arrête', 'arrete', 'arrêtes', 'arretes', 'halte',
+              'urgence', 'pas bouger', 'stoppe']
 
 
 class PickAndPlaceV6(Node):
@@ -64,6 +78,9 @@ class PickAndPlaceV6(Node):
         self._latest_color = None
         self._odom_x = 0.0
         self._odom_y = 0.0
+        self._odom_yaw = 0.0
+        self._odom_stamp = 0.0    # time.monotonic() du dernier message /odom
+        self._color_stamp = 0.0   # time.monotonic() du dernier message couleur
 
         self.cmd_vel_pub = self.create_publisher(Twist, '/controller/cmd_vel', 1)
         self.tts_pub = self.create_publisher(String, '/tts_node/tts_text', 1)
@@ -96,6 +113,15 @@ class PickAndPlaceV6(Node):
         if not text:
             return
         self.get_logger().info(f'ASR: "{text}"')
+        if self._is_stop(text):
+            with self._lock:
+                running = self._busy
+                if running:
+                    self._abort = True
+            self._stop()
+            if running:
+                self.get_logger().warn('🛑 ARRET D\'URGENCE demandé - séquence interrompue')
+            return
         if not self._is_trigger(text):
             return
         with self._lock:
@@ -109,15 +135,25 @@ class PickAndPlaceV6(Node):
     def _color_cb(self, msg):
         with self._lock:
             self._latest_color = msg
+            self._color_stamp = time.monotonic()
 
     def _odom_cb(self, msg):
         with self._lock:
             self._odom_x = msg.pose.pose.position.x
             self._odom_y = msg.pose.pose.position.y
+            q = msg.pose.pose.orientation
+            self._odom_yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                                        1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+            self._odom_stamp = time.monotonic()
 
-    def _is_trigger(self, text):
-        if 'va chercher' in text or 'va ramasser' in text:
-            return True
+    @staticmethod
+    def _is_stop(text):
+        return any(w in text for w in STOP_WORDS)
+
+    @staticmethod
+    def _is_trigger(text):
+        if any(w in text for w in MISSION_WORDS):
+            return False
         has_verb = any(v in text for v in TRIGGER_VERBS)
         has_object = any(o in text for o in TRIGGER_OBJECTS)
         return has_verb and has_object
@@ -133,13 +169,26 @@ class PickAndPlaceV6(Node):
     def _stop(self):
         self.cmd_vel_pub.publish(Twist())
 
+    def _odom_alive(self):
+        with self._lock:
+            return time.monotonic() - self._odom_stamp < ODOM_STALE_S
+
     def _get_red_cube(self, timeout=2.0):
+        """Renvoie le plus gros cube rouge d'une détection RÉCENTE.
+        Les messages reçus avant l'appel (+ COLOR_SETTLE_S) sont ignorés: ils
+        proviennent d'images prises pendant le mouvement précédent et faisaient
+        sur-corriger le robot (oscillations)."""
+        fresh_after = time.monotonic() + COLOR_SETTLE_S
         deadline = time.time() + timeout
         best = None
         best_size = 0
         while time.time() < deadline and not self._abort:
             with self._lock:
                 info = self._latest_color
+                stamp = self._color_stamp
+            if stamp < fresh_after:
+                time.sleep(0.02)
+                continue
             if info and len(info.data) > 0:
                 reds = [c for c in info.data if c.color == TARGET_COLOR]
                 for c in reds:
@@ -153,15 +202,39 @@ class PickAndPlaceV6(Node):
         return best
 
     def _turn_to(self, angle_rad, angular_speed=0.4):
-        """Rotation: +angle = cube a droite -> tourne a droite (meme convention que v5)."""
+        """Rotation: +angle = cube a droite -> tourne a droite (meme convention que v5).
+        Boucle fermée sur le cap de l'odométrie (comme _drive). Si l'odom ne
+        répond pas, repli sur l'ancienne rotation chronométrée."""
         if abs(angle_rad) < TURN_DEADZONE:
             return
-        duration = abs(angle_rad) / angular_speed
+        target = abs(angle_rad)
+        nominal = target / angular_speed
         twist = Twist()
         twist.angular.z = -math.copysign(angular_speed, angle_rad)
-        self.get_logger().info(f'  Rotation {math.degrees(angle_rad):+.1f}°')
+        use_odom = self._odom_alive()
+        mode = 'boucle odom' if use_odom else 'chrono, odom absente'
+        self.get_logger().info(f'  Rotation {math.degrees(angle_rad):+.1f}° ({mode})')
+        with self._lock:
+            prev_yaw = self._odom_yaw
+        turned = 0.0
         start = time.time()
-        while time.time() - start < duration and not self._abort:
+        deadline = start + 3.0 * nominal + 1.0
+        while not self._abort:
+            now = time.time()
+            if use_odom:
+                if not self._odom_alive():
+                    use_odom = False
+                    self.get_logger().warn('  odom perdue pendant la rotation -> chrono')
+                else:
+                    with self._lock:
+                        yaw = self._odom_yaw
+                    d = math.atan2(math.sin(yaw - prev_yaw), math.cos(yaw - prev_yaw))
+                    turned += abs(d)
+                    prev_yaw = yaw
+                    if turned >= target or now >= deadline:
+                        break
+            if not use_odom and now - start >= nominal:
+                break
             self.cmd_vel_pub.publish(twist)
             time.sleep(CMD_VEL_RATE)
         self._stop()
@@ -182,8 +255,15 @@ class PickAndPlaceV6(Node):
         direction = 'Avance' if distance_m < 0 else 'Recule'
         self.get_logger().info(f'  {direction} {target*100:.1f}cm (boucle odom)')
         # marge x3 au cas ou l'odom decroche, + 2 s de securite
-        deadline = time.time() + 3.0 * (target / linear_speed) + 2.0
+        nominal = target / linear_speed
+        start = time.time()
+        deadline = start + 3.0 * nominal + 2.0
         while time.time() < deadline and not self._abort:
+            # Sans odom, la distance mesurée reste à 0: on roulerait jusqu'à
+            # 3x la distance demandée. Repli sur la durée nominale.
+            if not self._odom_alive() and time.time() - start >= nominal:
+                self.get_logger().warn('  odom absente -> arret a la duree nominale')
+                break
             with self._lock:
                 x1, y1 = self._odom_x, self._odom_y
             traveled = math.hypot(x1 - x0, y1 - y0)
@@ -268,16 +348,21 @@ class PickAndPlaceV6(Node):
         down = dict(servo_down)
         down[10] = gripper_open
         self._move_servos(down, 1.5)
+        if self._abort:
+            return False
 
         time.sleep(0.4)   # stabilisation
         self.get_logger().info(f'  Prehension: fermeture pince ({gripper_close})')
         self._move_servos({10: gripper_close}, 0.8)
+        if self._abort:
+            return False
 
         self.get_logger().info('  Prehension: remontee')
         up = dict(arm_up)
         up[10] = gripper_close
         self._move_servos(up, 1.5)
         self.get_logger().info('  ✅ Prehension terminee')
+        return True
 
     def _run_sequence(self):
         try:
@@ -302,7 +387,10 @@ class PickAndPlaceV6(Node):
 
             self._say("Je me place.")
             if not self._position_and_grip(calib):
-                self._say("Je n'ai pas reussi a me placer.")
+                if self._abort:
+                    self._say("Arrêt.")
+                else:
+                    self._say("Je n'ai pas reussi a me placer.")
                 return
 
             # Avance a l'aveugle: reference -> point de grip (le point de grip
@@ -312,10 +400,15 @@ class PickAndPlaceV6(Node):
                 self.get_logger().info(
                     f'Avance finale a l\'aveugle: {extra*100:.1f}cm (reference -> grip)')
                 self._drive(-extra)
+            if self._abort:
+                self._say("Arrêt.")
+                return
 
-            self._say("J'attrape le cube !")
-            self._grip(calib)
-            self._say("Voila, j'ai attrape le cube !")
+            self._say("J'y vais !")  # pas « attrape »/« cube »: le micro pourrait relancer la séquence
+            if not self._grip(calib):
+                self._say("Arrêt.")
+                return
+            self._say("Voilà, c'est fait !")
             self.get_logger().info('✅ Séquence terminée')
         except Exception as e:
             self.get_logger().error(f'Erreur: {e}')

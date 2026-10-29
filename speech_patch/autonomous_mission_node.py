@@ -304,7 +304,7 @@ class AutonomousMissionNode(Node):
                 self._say(f"Cube {cubes_picked} attrapé ! {max_cubes - cubes_picked} restant.")
                 self.get_logger().info(f'✅ Cube {cubes_picked}/{max_cubes} attrapé')
             else:
-                self._say("Je n'arrive pas à attraper ce cube. Je passe au suivant.")
+                self._say("Je n'y arrive pas. Je passe au suivant.")
                 self.get_logger().warn('❌ Échec définitif sur ce cube')
 
             # 3. Reculer pour lâcher de la place
@@ -414,7 +414,7 @@ class AutonomousMissionNode(Node):
         # Ajuster distance (simplifié: avance fixe)
         with self._lock:
             self._state = STATE_PICKING
-        self._say("J'attrape le cube !")
+        self._say("J'y vais !")  # pas « attrape »+« cube »: relancerait pick_and_place_node_v6 via le micro
         self._drive(-0.10)  # avance 10cm
 
         # Action bras
