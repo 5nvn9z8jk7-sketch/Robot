@@ -31,19 +31,19 @@ fi
 
 # 4. Détection couleur
 if ! ros2 node list 2>/dev/null | grep -q simple_color_detect; then
-    setsid nohup python3 /home/ubuntu/speech_patch/simple_color_detect_v2.py >/tmp/color.log 2>&1 < /dev/null &
+    setsid nohup python3 /home/ubuntu/speech_patch/simple_color_detect_v3.py >/tmp/color.log 2>&1 < /dev/null &
     disown
     echo "Color detect: lancé"
 else
     echo "Color detect: déjà actif"
 fi
 
-# 5. Pick-and-place v5
+# 5. Pick-and-place v6 (lit pick_calib.json, calibrer avec teach_pick_v6.py)
 pkill -f pick_and_place_node 2>/dev/null
 sleep 1
-setsid nohup python3 /home/ubuntu/speech_patch/pick_and_place_node_v5.py --ros-args -p use_depth:=true -p gripper_reach:=0.15 >/tmp/pick_v5.log 2>&1 < /dev/null &
+setsid nohup python3 -u /home/ubuntu/speech_patch/pick_and_place_node_v6.py >/tmp/pick_v6.log 2>&1 < /dev/null &
 disown
-echo "Pick v5: lancé"
+echo "Pick v6: lancé"
 
 # 6. Mission autonome
 setsid nohup python3 /home/ubuntu/speech_patch/autonomous_mission_node.py >/tmp/mission.log 2>&1 < /dev/null &
