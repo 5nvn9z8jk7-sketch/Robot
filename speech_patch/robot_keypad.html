@@ -537,7 +537,7 @@ function setServo(id, value) {
   var lim = servoLimits[id];
   value = Math.round(Math.max(lim[0], Math.min(lim[1], value)));
   armServos[id] = value;
-  ws.send(JSON.stringify({ op: 'publish', topic: '/servo_controller', msg: { duration: 0.5, position_unit: 'pwm', position: [{ id: id, position: value }] } }));
+  ws.send(JSON.stringify({ op: 'publish', topic: '/servo_controller', msg: { duration: 0.5, position_unit: 'pulse', position: [{ id: id, position: value }] } }));
   log('[SERVO] ' + (servoNames[id] || id) + ' -> ' + value, 'ok');
 }
 
@@ -548,7 +548,7 @@ function resetArm() {
   armServos = { 1: 500, 2: 400, 3: 300, 4: 300, 5: 500, 10: 200 };
   var positions = [];
   for (var id in armServos) { positions.push({ id: parseInt(id), position: armServos[id] }); }
-  ws.send(JSON.stringify({ op: 'publish', topic: '/servo_controller', msg: { duration: 1.5, position_unit: 'pwm', position: positions } }));
+  ws.send(JSON.stringify({ op: 'publish', topic: '/servo_controller', msg: { duration: 1.5, position_unit: 'pulse', position: positions } }));
   log('[N] Bras -> position initiale', 'ok');
 }
 

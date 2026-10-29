@@ -44,11 +44,10 @@ NODES_CONFIG = [
     ("rosbridge_websocket",
      "ros2 launch rosbridge_server rosbridge_websocket_launch.xml",
      None, 1, 5),  # Pas de topic spécifique, on teste le port
-    ("aurora",
-     "bash -c 'source /home/ubuntu/third_party/aurora_ws/install/setup.bash 2>/dev/null; ros2 run deptrum-ros-driver-aurora930 aurora930_node --ros-args -r depth/image_raw:=depth_cam/depth0/image_raw -r ir/camera_info:=depth_cam/depth0/camera_info -r ir/image_raw:=depth_cam/ir0/image_raw -r points2:=depth_cam/depth0/points -r rgb/camera_info:=depth_cam/rgb0/camera_info -r rgb/image_raw:=depth_cam/rgb0/image_raw'",
-     "/depth_cam/depth0/image_raw", 1, 3),  # Priorité 1 (critique) car la caméra est essentielle
-    ("pick_and_place_node_v5",
-     "python3 /home/ubuntu/speech_patch/pick_and_place_node_v5.py --ros-args -p gripper_reach:=0.15 -p camera_to_gripper_offset:=0.10 -p use_custom_grip:=true -p use_depth:=true",
+    # ("aurora", ...) — supervisé par camera_watchdog_v2.sh (restart flux dédié),
+    # ne pas le gérer ici pour éviter les doubles redémarrages USB.
+    ("pick_and_place_node_v6",
+     "python3 /home/ubuntu/speech_patch/pick_and_place_node_v6.py",
      None, 2, 3),
     ("ws_audio_asr",
      None,  # Lancé par un script externe, on vérifie juste
@@ -66,7 +65,7 @@ NODES_CONFIG = [
      "python3 /home/ubuntu/speech_patch/autonomous_mission_node.py",
      None, 2, 3),
     ("simple_color_detect",
-     "python3 /home/ubuntu/speech_patch/simple_color_detect_v2.py",
+     "python3 /home/ubuntu/speech_patch/simple_color_detect_v3.py",
      "/color_detect_node/color_info", 1, 3),
     ("servo_controller",
      None,
