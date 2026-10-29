@@ -83,7 +83,8 @@ MISSION_COMMANDS = {
              'pause', 'halte', 'stoppe'],
     'status': ['status', 'état', 'etat', 'rapport', 'où en es-tu', 'ou en es tu',
                'batterie', 'resume', 'résume'],
-    'attrape': ['attrape', 'prends', 'ramasse', 'saisis', 'pick', 'grab'],
+    # 'attrape' (un seul cube) retire : c'est pick_and_place_node_v6 qui s'en charge.
+    # Avant, "attrape cube" lancait les DEUX noeuds en meme temps (conflit roues + bras).
 }
 
 
@@ -212,9 +213,11 @@ class AutonomousMissionNode(Node):
 
     def _parse_command(self, text):
         """Analyse le texte et retourne le type de commande."""
+        # Recherche par MOT entier (avant : 'go' matchait 'gobelet', 'garde' matchait 'regarde'...)
+        import re
         for cmd_type, keywords in MISSION_COMMANDS.items():
             for kw in keywords:
-                if kw in text:
+                if re.search(r'(?<!\w)' + re.escape(kw) + r'(?!\w)', text):
                     return cmd_type
         return None
 
