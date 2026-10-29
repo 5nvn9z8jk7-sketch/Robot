@@ -7,7 +7,7 @@ export SPEECH_LANG=fr
 pkill -f pick_and_place_node 2>/dev/null
 pkill -f voice_pick_node 2>/dev/null
 sleep 1
-setsid python3 ~/pick_and_place_node.py > ~/pick_and_place.log 2>&1 < /dev/null &
+setsid python3 -u /home/ubuntu/speech_patch/pick_and_place_node_v6.py > ~/pick_and_place.log 2>&1 < /dev/null &
 setsid python3 ~/voice_pick_node.py > ~/voice_pick.log 2>&1 < /dev/null &
 sleep 3
 echo "Nodes:"

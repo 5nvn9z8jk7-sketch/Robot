@@ -8,3 +8,6 @@ weights/
 *.pt
 *.engine
 speech_patch_deploy.zip
+# Fichiers de sauvegarde / journaux
+*.bak
+*.log
