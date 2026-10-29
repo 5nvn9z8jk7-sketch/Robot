@@ -10,8 +10,8 @@ from sensor_msgs.msg import Image
 from interfaces.msg import ColorsInfo, ColorInfo
 from cv_bridge import CvBridge
 
-DEPTH_WIDTH = 320
-DEPTH_HEIGHT = 200
+DEPTH_WIDTH = 640
+DEPTH_HEIGHT = 400
 
 class SimpleColorDetect(Node):
     def __init__(self):

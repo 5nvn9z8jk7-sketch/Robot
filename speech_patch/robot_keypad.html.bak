@@ -187,6 +187,10 @@
   <button class="key speak" onclick="sendMission('status')" style="grid-column:span 3;aspect-ratio:2.5;">
     <span class="num">S</span><span class="icon">📊</span><span class="label">STATUS (batterie, position)</span>
   </button>
+
+  <button class="key pick" onclick="sendGripper()" style="grid-column:span 3;aspect-ratio:2.5;">
+    <span class="num">O</span><span class="icon">🤲</span><span class="label">OUVRE/FERME LA PINCE</span>
+  </button>
 </div>
 
 <!-- Joystick virtuel -->
@@ -433,11 +437,28 @@ async function sendVoice(num) {
 }
 
 async function sendPick() {
-  log('[P] 🤏 Pick-and-Place: "Attrape le cube rouge"', 'cmd');
-  if (!llmReady) { log('LLM non disponible', 'err'); return; }
-  if (!ws || ws.readyState !== WebSocket.OPEN) { log('Robot non connecté', 'err'); return; }
+  log('[P] Pick-and-Place: "Attrape le cube rouge"', 'cmd');
+  if (!ws || ws.readyState !== WebSocket.OPEN) { log('Robot non connecte', 'err'); return; }
   ws.send(JSON.stringify({ op: 'publish', topic: '/vocal_detect/asr_result', msg: { data: PICK_CMD } }));
-  log('[P] Commande envoyée — vérifie la caméra depth (topic /depth_cam/depth0/image_raw)', 'ok');
+  log('[P] Commande envoyee - le robot scanne, se place et attrape', 'ok');
+}
+
+// === SCAN 360 (rotation complete pour chercher un cube) ===
+function sendScan() {
+  log('[C] Scan 360 - le robot tourne sur lui-meme', 'cmd');
+  if (!ws || ws.readyState !== WebSocket.OPEN) { log('Robot non connecte', 'err'); return; }
+  const rotSpeed = 1.5;
+  const duration = 3200;
+  publishCmdVel(0, rotSpeed);
+  setTimeout(function() { publishCmdVel(0, 0); log('[C] Scan 360 termine', 'ok'); }, duration);
+}
+
+// === GRIPPER TOGGLE (Ouvre/Ferme la pince) ===
+function sendGripper() {
+  log('[O] Toggle pince (ouvre/ferme)', 'cmd');
+  if (!ws || ws.readyState !== WebSocket.OPEN) { log('Robot non connecte', 'err'); return; }
+  ws.send(JSON.stringify({ op: 'publish', topic: '/vocal_detect/asr_result', msg: { data: 'ouvre ou ferme la pince' } }));
+  log('[O] Commande pince envoyee', 'ok');
 }
 
 document.addEventListener('keydown', (e) => {
@@ -448,7 +469,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'ArrowRight') { e.preventDefault(); sendCmd(6); return; }
   // Touches AZERTY ZQSD
   if (e.key === 'z' || e.key === 'Z') { sendCmd(8); return; }
-  if (e.key === 's' || e.key === 'S') { sendCmd(2); return; }
+  // S = Status (voir second listener). Utiliser Fleche Down ou 2 pour reculer.
   if (e.key === 'q' || e.key === 'Q') { sendCmd(4); return; }
   if (e.key === 'd' || e.key === 'D') { sendCmd(6); return; }
   // Touches numériques
@@ -458,8 +479,9 @@ document.addEventListener('keydown', (e) => {
     else if (VOICE_CMDS[num]) sendVoice(num);
   }
   if (e.key === 'p' || e.key === 'P') { e.preventDefault(); sendPick(); }
-  if (e.key === 'c' || e.key === 'C') { e.preventDefault(); sendScan(); }
-  if (e.key === ' ' || e.key === 'Spacebar') { e.preventDefault(); sendCmd(0); }
+  if (e.key === 'c' || e.key === 'C') { e.preventDefault(); sendScan(); return; }
+  if (e.key === 'o' || e.key === 'O') { e.preventDefault(); sendGripper(); return; }
+  if (e.key === ' ' || e.key === 'Spacebar') { e.preventDefault(); sendCmd(0); return; }
 });
 
 function updateSpeed() {
@@ -476,7 +498,7 @@ function updatePickDist() {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({
       op: 'call_service',
-      service: '/pick_and_place_node_v4/set_parameters',
+      service: '/pick_and_place_node_v5/set_parameters',
       args: { parameters: [
         { name: 'gripper_reach', value: { type: 3, double_value: val } }
       ] },
@@ -504,10 +526,10 @@ function joyStart(direction) {
   let linear = 0, angular = 0;
   const fast = 1.5, slow = 0.5;
   switch(direction) {
-    case 'fwd':   linear = -joySpeed; break;
-    case 'back':  linear = joySpeed; break;
-    case 'left':  angular = -joyRot; break;
-    case 'right': angular = joyRot; break;
+    case 'fwd':   linear = joySpeed; break;
+    case 'back':  linear = -joySpeed; break;
+    case 'left':  angular = joyRot; break;
+    case 'right': angular = -joyRot; break;
     case 'slow':  joySpeed = Math.max(0.1, joySpeed - 0.1); joyRot = Math.max(0.3, joyRot - 0.3); log('🐢 Vitesse: ' + joySpeed.toFixed(1)); return;
     case 'fast':  joySpeed = Math.min(0.8, joySpeed + 0.1); joyRot = Math.min(2.0, joyRot + 0.3); log('🐇 Vitesse: ' + joySpeed.toFixed(1)); return;
   }
@@ -529,11 +551,12 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'r' || e.key === 'R') { e.preventDefault(); sendMission('patrouille'); }
   if (e.key === 'b' || e.key === 'B') { e.preventDefault(); sendMission('retourne a la base'); }
   if (e.key === 's' || e.key === 'S') { e.preventDefault(); sendMission('status'); }
+  if (e.key === 'o' || e.key === 'O') { e.preventDefault(); sendGripper(); }
 });
 
 connectRobot();
 checkLLM();
-log('Interface prête — 0-9, ZQSD, P=pick, C=scan, M=mission, R=patrouille, B=base, S=status', 'cmd');
+log('Interface prete - 0-9, ZQSD(fleches), P=pick, C=scan360, O=pince, M=mission, R=patrouille, B=base, S=status', 'cmd');
 </script>
 </body>
 </html>

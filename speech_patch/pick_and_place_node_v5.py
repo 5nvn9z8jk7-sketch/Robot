@@ -42,6 +42,7 @@ from rclpy.node import Node
 from std_msgs.msg import String
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Image, CameraInfo
+from nav_msgs.msg import Odometry
 
 from interfaces.msg import ColorsInfo
 from servo_controller_msgs.msg import ServosPosition
@@ -115,6 +116,9 @@ class PickAndPlaceNodeV4(Node):
         self._latest_depth_image = None
         self._depth_frames = 0
         self._depth_available = False
+        self._latest_odom_x = 0.0
+        self._latest_odom_y = 0.0
+        self._odom_received = False
 
         self.cmd_vel_pub = self.create_publisher(Twist, '/controller/cmd_vel', 1)
         self.tts_pub = self.create_publisher(String, '/tts_node/tts_text', 1)
@@ -133,6 +137,8 @@ class PickAndPlaceNodeV4(Node):
             Image, '/depth_cam/depth0/image_raw', self._depth_callback, 1)
         self.create_subscription(
             CameraInfo, '/depth_cam/depth0/camera_info', self._camera_info_callback, 1)
+        self.create_subscription(
+            Odometry, '/odom', self._odom_callback, 1)
 
         use_depth = self._get_param('use_depth')
         self.get_logger().info(
@@ -187,6 +193,12 @@ class PickAndPlaceNodeV4(Node):
                 rclpy.parameter.Parameter('cx', rclpy.Parameter.Type.DOUBLE, msg.k[2]),
                 rclpy.parameter.Parameter('cy', rclpy.Parameter.Type.DOUBLE, msg.k[5]),
             ])
+
+    def _odom_callback(self, msg):
+        with self._lock:
+            self._latest_odom_x = msg.pose.pose.position.x
+            self._latest_odom_y = msg.pose.pose.position.y
+            self._odom_received = True
 
     def _is_trigger(self, text):
         if 'va chercher' in text or 'va ramasser' in text:
@@ -254,35 +266,24 @@ class PickAndPlaceNodeV4(Node):
     def _get_distance(self, cube):
         """
         Retourne la distance au cube en mètres.
-        Utilise depth si disponible, sinon estimation par taille.
+        PRIORITE: depth (caméra profondeur, précision mm).
+        Fallback: estimation par taille si pas de depth.
         """
         use_depth = self._get_param('use_depth')
 
-        # Estimation par taille (primaire — plus fiable que depth sur cette camera)
+        # 1. Essayer la profondeur d'abord (source primaire)
+        if use_depth:
+            depth_mm = self._get_depth_at(cube.x, cube.y)
+            if depth_mm is not None:
+                return depth_mm / 1000.0, 'depth'
+
+        # 2. Fallback: estimation par taille
         target_size = float(self._get_param('target_size_px'))
         gripper_reach = float(self._get_param('gripper_reach'))
         current_size = (cube.width + cube.height) / 2.0
         if current_size > 0:
             est_dist = gripper_reach * (target_size / current_size)
-            # Utiliser depth seulement pour valider/cooriger si tres different
-            if use_depth:
-                depth_mm = self._get_depth_at(cube.x, cube.y)
-                if depth_mm is not None:
-                    depth_dist = depth_mm / 1000.0
-                    # Si depth et estimate sont coherents (±30%), prendre la moyenne
-                    if 0.7 < est_dist / depth_dist < 1.4:
-                        avg = (est_dist + depth_dist) / 2.0
-                        return avg, 'size+depth'
-                    else:
-                        # Depth peu fiable, garder l'estimation
-                        return est_dist, 'estimate'
             return est_dist, 'estimate'
-
-        # Fallback: depth seul
-        if use_depth:
-            depth_mm = self._get_depth_at(cube.x, cube.y)
-            if depth_mm is not None:
-                return depth_mm / 1000.0, 'depth'
 
         return None, 'none'
 
@@ -295,7 +296,7 @@ class PickAndPlaceNodeV4(Node):
         duration = abs(angle_rad) / angular_speed
         self.get_logger().info(f'  Rotation {math.degrees(angle_rad):+.1f}°')
         twist = Twist()
-        twist.angular.z = math.copysign(angular_speed, angle_rad)
+        twist.angular.z = -math.copysign(angular_speed, angle_rad)  # INVERSE: + = droite, - = gauche
         start = time.time()
         while time.time() - start < duration and not self._abort:
             self.cmd_vel_pub.publish(twist)
@@ -303,22 +304,95 @@ class PickAndPlaceNodeV4(Node):
         self._stop_robot()
         time.sleep(0.2)
 
-    def _drive(self, distance_m):
-        """Avance (négatif) ou recule (positif)."""
+    def _drive(self, distance_m, cube=None):
+        """Avance (négatif) ou recule (positif). Diagnostic complet si cube fourni."""
         linear_speed = float(self._get_param('linear_speed'))
         if abs(distance_m) < DISTANCE_DEADZONE:
             return
         duration = abs(distance_m) / linear_speed
         direction = "Avance" if distance_m < 0 else "Recule"
         self.get_logger().info(f'  {direction} {abs(distance_m)*100:.1f}cm')
+
+        # ─── DIAGNOSTIC AVANT DÉPLACEMENT ───
+        if cube is not None:
+            self.get_logger().info('  ─── DIAGNOSTIC ───')
+            self.get_logger().info(f'  Cube : x={cube.x} y={cube.y} ({cube.width}x{cube.height}px)')
+
+            depth_before_mm = self._get_depth_at(cube.x, cube.y)
+            depth_before = depth_before_mm / 1000.0 if depth_before_mm else None
+            if depth_before:
+                self.get_logger().info(f'  Depth avant déplacement : {depth_before:.3f} m ({depth_before_mm:.0f} mm)')
+            else:
+                self.get_logger().warn('  Depth avant déplacement : INDISPONIBLE')
+
+            self.get_logger().info(f'  Commande {direction.lower()} : {abs(distance_m):.3f} m')
+
+            with self._lock:
+                odom_before = self._latest_odom_x
+                odom_y_before = self._latest_odom_y
+            self.get_logger().info(f'  Odom avant : x={odom_before:.3f} m  y={odom_y_before:.3f} m')
+        else:
+            with self._lock:
+                odom_before = self._latest_odom_x
+            depth_before = None
+
+        # ─── MOUVEMENT ───
         twist = Twist()
-        twist.linear.x = linear_speed if distance_m < 0 else -linear_speed
+        twist.linear.x = -linear_speed if distance_m < 0 else linear_speed  # INVERSE: + = recule, - = avance
         start = time.time()
         while time.time() - start < duration and not self._abort:
             self.cmd_vel_pub.publish(twist)
             time.sleep(CMD_VEL_RATE)
         self._stop_robot()
         time.sleep(0.15)
+
+        # ─── DIAGNOSTIC APRÈS DÉPLACEMENT ───
+        if cube is not None:
+            with self._lock:
+                odom_after = self._latest_odom_x
+                odom_y_after = self._latest_odom_y
+            actual_move = odom_after - odom_before
+            self.get_logger().info(f'  Odom après : x={odom_after:.3f} m  y={odom_y_after:.3f} m')
+            self.get_logger().info(f'  Déplacement réel (odom) : {actual_move:.3f} m')
+
+            # Re-détecter le cube pour lire la depth après
+            time.sleep(0.3)
+            new_cube = self._get_red_cube(timeout=2.0)
+            if new_cube is not None:
+                cube = new_cube
+                self.get_logger().info(f'  Cube après : x={cube.x} y={cube.y} ({cube.width}x{cube.height}px)')
+
+            depth_after_mm = self._get_depth_at(cube.x, cube.y)
+            depth_after = depth_after_mm / 1000.0 if depth_after_mm else None
+            if depth_after:
+                self.get_logger().info(f'  Depth après déplacement : {depth_after:.3f} m ({depth_after_mm:.0f} mm)')
+            else:
+                self.get_logger().warn('  Depth après déplacement : INDISPONIBLE')
+
+            if depth_before and depth_after:
+                depth_variation = depth_after - depth_before
+                self.get_logger().info(f'  Variation depth : {depth_variation:+.3f} m')
+
+                # Comparaison : la variation de depth devrait être ≈ -déplacement réel (si on avance vers le cube)
+                # Si on avance (distance_m < 0), le cube se rapproche => depth diminue => variation négative
+                expected = -actual_move  # si avance de 5cm, depth devrait diminuer de 5cm
+                ecart = depth_variation - expected
+                self.get_logger().info(f'  Variation attendue (=-déplacement) : {expected:+.3f} m')
+                self.get_logger().info(f'  Écart depth vs odom : {ecart:+.3f} m')
+
+                if abs(ecart) < 0.02:
+                    self.get_logger().info('  => ✅ COHÉRENT : depth et odom agree')
+                elif abs(ecart) < 0.05:
+                    self.get_logger().warn(f'  => ⚠️  PROCHE : écart {abs(ecart)*100:.1f}cm')
+                else:
+                    self.get_logger().error(f'  => ❌ INCOHÉRENT : écart {abs(ecart)*100:.1f}cm — Mauvais pixel depth ou drift')
+            else:
+                self.get_logger().warn('  => ⚠️  Impossible de comparer (depth manquante)')
+
+            self.get_logger().info('  ─── FIN DIAGNOSTIC ───')
+
+        # Retourner le cube mis à jour pour l'appelant
+        return cube
 
     # ─── Séquence principale ───
 
@@ -387,53 +461,63 @@ class PickAndPlaceNodeV4(Node):
 
     def _adjust_distance(self, cube):
         """
-        Ajuste la distance au cube avec précision.
-        Utilise depth (mm) si disponible, sinon estimation par taille.
+        Ajuste la distance au cube en UN SEUL mouvement.
+        Utilise la profondeur (depth) pour calculer la distance exacte.
+        Évite les itérations qui causent de la dérive latérale.
         """
         gripper_reach = float(self._get_param('gripper_reach'))
         cam_offset = float(self._get_param('camera_to_gripper_offset'))
-        target_dist = gripper_reach + cam_offset  # cible camera = pince + offset
+        target_dist = gripper_reach + cam_offset
         tolerance = float(self._get_param('distance_tolerance'))
         self.get_logger().info(f'  Cible camera: {target_dist*100:.1f}cm (pince: {gripper_reach*100:.1f}cm + offset: {cam_offset*100:.1f}cm)')
 
-        for iteration in range(MAX_POSITIONING_ITER):
-            if self._abort:
-                return None
+        # Mesurer la distance actuelle (2 mesures pour stabilité)
+        dist1, src1 = self._get_distance(cube)
+        time.sleep(0.2)
+        cube = self._get_red_cube(timeout=2.0) or cube
+        dist2, src2 = self._get_distance(cube)
+        
+        if dist1 is None and dist2 is None:
+            self.get_logger().warn('Distance indisponible')
+            return cube
+        
+        dist = dist2 if dist2 is not None else dist1
+        source = src2 if dist2 is not None else src1
+        
+        error = dist - target_dist
+        self.get_logger().info(
+            f'  [{source}] distance={dist*100:.1f}cm '
+            f'(cible={target_dist*100:.1f}cm, erreur={error*100:+.1f}cm)')
 
-            cube = self._get_red_cube(timeout=2.0)
-            if cube is None:
-                self.get_logger().warn('Cube perdu')
-                return None
+        if abs(error) <= tolerance:
+            self.get_logger().info('  ✅ Distance OK !')
+            return cube
 
-            dist, source = self._get_distance(cube)
-            if dist is None:
-                self.get_logger().warn('Distance indisponible, nouvelle détection...')
-                time.sleep(0.3)
-                continue
+        # Un seul mouvement pour corriger l'erreur
+        delta = -error  # négatif = avancer, positif = reculer
+        # Limiter à ±15cm pour sécurité
+        delta = max(-0.15, min(0.15, delta))
+        
+        if delta < 0:
+            self._say("J'avance.")
+            self.get_logger().info(f'  Avance de {abs(delta)*100:.1f}cm en un seul mouvement')
+        else:
+            self._say("Je recule.")
+            self.get_logger().info(f'  Recule de {abs(delta)*100:.1f}cm en un seul mouvement')
+        
+        self._drive(delta, cube)
+        time.sleep(0.5)  # attendre la stabilisation
 
-            error = dist - target_dist
+        # Vérification finale (sans itération)
+        cube = self._get_red_cube(timeout=2.0) or cube
+        dist_final, src_final = self._get_distance(cube)
+        if dist_final:
+            err_final = dist_final - target_dist
             self.get_logger().info(
-                f'  [{source}] distance={dist*100:.1f}cm '
-                f'(cible={target_dist*100:.1f}cm, erreur={error*100:+.1f}cm)')
-
-            if abs(error) <= tolerance:
-                self.get_logger().info('  ✅ Distance OK !')
-                return cube
-
-            # Ajuster: si trop loin (error > 0) → avancer (négatif)
-            # si trop proche (error < 0) → reculer (positif)
-            delta = -error  # négatif = avancer, positif = reculer
-            delta = max(-0.10, min(0.10, delta))  # clamp ±10cm
-
-            if delta < 0:
-                self._say("J'avance un peu.")
-            else:
-                self._say("Je recule un peu.")
-            self._drive(delta)
-            time.sleep(0.2)
-
-        self.get_logger().warn('Max itérations atteint, on tente quand même')
-        return self._get_red_cube(timeout=2.0)
+                f'  [{src_final}] distance finale={dist_final*100:.1f}cm '
+                f'(erreur residuelle={err_final*100:+.1f}cm)')
+        
+        return cube
 
     def _custom_grip_sequence(self):
         """Sequence de prehension au sol avec controle servo direct.
@@ -453,7 +537,7 @@ class PickAndPlaceNodeV4(Node):
 
         # 2. Avancer legerement pour amener la pince sur le cube
         self.get_logger().info('  Prehension: avance 5cm')
-        self._drive(-0.05)
+        self._drive(-0.08)
 
         # 3. Fermer la pince
         self.get_logger().info('  Prehension: fermeture pince')
@@ -461,7 +545,7 @@ class PickAndPlaceNodeV4(Node):
 
         # 4. Reculer legerement avec le cube
         self.get_logger().info('  Prehension: recule 5cm')
-        self._drive(0.05)
+        self._drive(0.08)
 
         # 5. Remonter le bras avec le cube
         self.get_logger().info('  Prehension: remontee bras')
