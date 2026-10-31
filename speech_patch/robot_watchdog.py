@@ -39,7 +39,7 @@ import os
 NODES_CONFIG = [
     # (nom, commande, topic à vérifier, priorité, delai avant test)
     ("ros_robot_controller",
-     "ros2 run ros_robot_controller ros_robot_controller",
+     "/home/ubuntu/ros2_ws/install/ros_robot_controller/lib/ros_robot_controller/ros_robot_controller --ros-args -r __ns:=/ --params-file /home/ubuntu/speech_patch/params_ros_robot_controller.yaml",
      "/ros_robot_controller/imu_raw", 1, 3),
     ("rosbridge_websocket",
      "ros2 launch rosbridge_server rosbridge_websocket_launch.xml",
@@ -54,7 +54,7 @@ NODES_CONFIG = [
      "/vocal_detect/asr_result", 2, 0),
     ("tts_node",
      "bash -c 'export ASR_MODE=offline ASR_LANGUAGE=fr MIC_TYPE=xf; ros2 run large_models tts_node'",
-     "/tts_node/tts_text", 1, 3),
+     None, 1, 3),  # tts_text = topic de requetes (ne publie jamais spontanement)
     ("agent_process",
      None,
      "/agent_process/result", 2, 0),
@@ -124,7 +124,7 @@ class RobotWatchdog:
         rc, _, _ = self._run_cmd(cmd, timeout=8)
         return rc == 0
 
-    def _is_topic_publishing(self, topic, timeout=6):
+    def _is_topic_publishing(self, topic, timeout=12):
         """Vérifie si un topic publie des messages."""
         if topic is None:
             return True  # Pas de test de topic
