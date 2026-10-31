@@ -40,3 +40,10 @@
 - Le dépôt GitHub `Robot` a été **passé en public** le 31/10 pour que le robot puisse faire `git clone`.
 - L'horloge du robot est en CST (fuseau chinois, locale chinoise dans les logs).
 - Le 31/10 à 21:35, l'utilisateur a fusionné sa version locale de `robot_watchdog.py` (commit 64672f7). Elle corrige `_run_cmd` en passant par `bash -c` (avec `/bin/sh`, `source` échouait et tous les nœuds étaient relancés en boucle) et ne gère plus la caméra non plus. **Le robot tourne encore l'ancienne version** (déployée avant la fusion) : il faut la redéployer à la reprise. Il suffit de relancer la commande `git clone` + `cp` + `start_camera_supervisor.sh --install-boot`.
+
+## Accès de l'agent (mise à jour 01/11)
+
+- Norton (protection comportementale, `IDP.HELU.PSE96`) mettait `pplx-sandbox-svc` en quarantaine. L'utilisateur l'a restauré avec une exception : **l'accès au PC refonctionne**.
+- **Mais** le PowerShell de l'agent sur le PC n'a pas accès au réseau (ssh et ping coupés) ni à `~/.ssh`. Il ne peut donc pas joindre le robot.
+- **Seule voie** : Tailscale sur le robot, plus la clé de l'agent dans `~/.ssh/authorized_keys`. Commande à lancer quand le robot est rechargé :
+  `ssh -t ubuntu@192.168.1.30 "mkdir -p ~/.ssh && echo '<CLE_PUBLIQUE_AGENT>' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up && tailscale ip -4"`
