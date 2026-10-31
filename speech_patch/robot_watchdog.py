@@ -88,6 +88,7 @@ class RobotWatchdog:
         self.running = True
         self._camera_check_count = 0
         self._last_camera_ok = time.time()
+        self.manage_camera = os.environ.get("WATCHDOG_MANAGE_CAMERA", "0") == "1"
 
         # Créer le répertoire de logs
         os.makedirs(LOG_DIR, exist_ok=True)
@@ -239,7 +240,11 @@ class RobotWatchdog:
         else:
             print(f"\n✅ Tous les systèmes opérationnels")
 
-        # Vérification spéciale caméra: redémarrage forcé si inactive depuis >60s
+        # Caméra : NE PLUS LA GÉRER ICI (31/10/2026). Le test `timeout 2 ros2 topic hz`
+        # échouait souvent sur une caméra saine (CLI ros2 trop lent à démarrer) et ce bloc
+        # tuait la caméra ~1x/min. La caméra est supervisée par camera_supervisor.py.
+        if not self.manage_camera:
+            return len(issues)
         self._camera_check_count += 1
         camera_ok = self._is_topic_publishing("/depth_cam/depth0/image_raw", timeout=2)
         if camera_ok:
