@@ -39,3 +39,4 @@
 
 - Le dépôt GitHub `Robot` a été **passé en public** le 31/10 pour que le robot puisse faire `git clone`.
 - L'horloge du robot est en CST (fuseau chinois, locale chinoise dans les logs).
+- Le 31/10 à 21:35, l'utilisateur a fusionné sa version locale de `robot_watchdog.py` (commit 64672f7). Elle corrige `_run_cmd` en passant par `bash -c` (avec `/bin/sh`, `source` échouait et tous les nœuds étaient relancés en boucle) et ne gère plus la caméra non plus. **Le robot tourne encore l'ancienne version** (déployée avant la fusion) : il faut la redéployer à la reprise. Il suffit de relancer la commande `git clone` + `cp` + `start_camera_supervisor.sh --install-boot`.
