@@ -25,7 +25,24 @@ import time
 
 STALE_S = float(os.environ.get("CAM_STALE_S", "8"))
 GRACE_S = float(os.environ.get("CAM_GRACE_S", "30"))
-USB_PORT = os.environ.get("CAM_USB_PORT", "1-2.2.1")
+USB_PORT_DEFAULT = os.environ.get("CAM_USB_PORT", "1-2.2.1")
+CAM_VID, CAM_PID = "3251", "1930"   # Aurora 930 (lsusb)
+
+
+def find_usb_port():
+    """Retrouve le port USB de la camera par son identifiant (marche meme si on change de port)."""
+    base = "/sys/bus/usb/devices"
+    try:
+        for d in os.listdir(base):
+            try:
+                with open(f"{base}/{d}/idVendor") as f1, open(f"{base}/{d}/idProduct") as f2:
+                    if f1.read().strip() == CAM_VID and f2.read().strip() == CAM_PID:
+                        return d
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return USB_PORT_DEFAULT
 DRY_RUN = os.environ.get("CAM_DRY_RUN", "0") == "1"
 TOPIC = os.environ.get("CAM_TOPIC", "/depth_cam/rgb0/image_raw")
 EVENTS_LOG = os.path.expanduser("~/camera_events.log")
@@ -108,6 +125,7 @@ def kill_driver():
 
 
 def usb_reset():
+    USB_PORT = find_usb_port()
     path = f"/sys/bus/usb/devices/{USB_PORT}"
     if not os.path.exists(path):
         log(f"   reset USB ignore : port {USB_PORT} introuvable (lsusb -t pour le trouver)")

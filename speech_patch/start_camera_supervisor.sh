@@ -4,6 +4,8 @@
 # Option --install-boot : ajoute aussi le lancement automatique a chaque demarrage (crontab @reboot).
 if [ "$1" = "--install-boot" ]; then
   (crontab -l 2>/dev/null | grep -vE 'start_camera_supervisor.sh|camera_watchdog'; echo "@reboot sleep 20 && bash /home/ubuntu/speech_patch/start_camera_supervisor.sh") | crontab -
+  # Empeche l'ancien watchdog camera de revenir au demarrage
+  for f in ~/start_watchdog.sh ~/start_*.sh; do [ -f "$f" ] && grep -q 'camera_watchdog' "$f" && sed -i '/camera_watchdog/s/^/# (desactive 31\/10) /' "$f" && echo "ancien watchdog camera desactive dans $f"; done
   echo "Lancement au demarrage installe (crontab -l pour verifier)"
 fi
 # Patterns bracketes [x] : evite le self-kill de pkill -f.
