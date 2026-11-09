@@ -99,7 +99,11 @@ class RobotWatchdog:
 
     def _get_ros_env(self):
         """Retourne les commandes pour sourcer ROS2."""
+        # XDG_RUNTIME_DIR : sans lui, les programmes lancés au boot (crontab)
+        # ne trouvent pas le service audio -> le TTS ne sortait aucun son
+        # (vérifié le 09/11 : même synthèse, son avec, silence sans).
         return (
+            "export XDG_RUNTIME_DIR=/run/user/1000 && "
             "source /opt/ros/humble/setup.bash && "
             "source /home/ubuntu/ros2_ws/install/setup.bash && "
             "source /home/ubuntu/third_party/aurora_ws/install/setup.bash 2>/dev/null; "
