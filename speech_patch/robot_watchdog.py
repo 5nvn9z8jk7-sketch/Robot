@@ -128,7 +128,9 @@ class RobotWatchdog:
         """Vérifie si un topic publie des messages."""
         if topic is None:
             return True  # Pas de test de topic
-        cmd = f"{self.ros_env} timeout {timeout} ros2 topic hz {topic} 2>/dev/null | head -1 | grep -q 'average rate'"
+        # Correction faite sur le robot (récupérée le 09/11) : sortie non bufferisée
+        # et sans « head -1 » (la 1re ligne n'est pas toujours « average rate »).
+        cmd = f"{self.ros_env} timeout {timeout} env PYTHONUNBUFFERED=1 ros2 topic hz {topic} 2>/dev/null | grep -q 'average rate'"
         rc, _, _ = self._run_cmd(cmd, timeout=timeout + 2)
         return rc == 0
 
@@ -239,7 +241,12 @@ class RobotWatchdog:
                 count = self._fail_counts.get(node_name, 0) + 1
                 self._fail_counts[node_name] = count
                 if count >= 2:
-                    issues.append((node_name, launch_cmd, priority, delay, f"{reason} (x{count})"))
+                    # Correction faite sur le robot (récupérée le 09/11) : ces nœuds
+                    # sont lancés à la main, le watchdog ne fait que les surveiller.
+                    if node_name in ("ws_audio_asr", "agent_process"):
+                        status += " [surveillance seule, lancement externe]"
+                    else:
+                        issues.append((node_name, launch_cmd, priority, delay, f"{reason} (x{count})"))
                 else:
                     status += " [1er échec, on attend le prochain cycle]"
 

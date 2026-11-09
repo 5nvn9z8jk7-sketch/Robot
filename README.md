@@ -27,10 +27,11 @@ Le robot démarre tout seul : la crontab lance `speech_patch/start_watchdogs.sh`
 
 Sur le PC : double-clic sur `speech_patch/start_interface.bat`, puis ouvrir `http://localhost:8888/robot_keypad.html`.
 
-Vérifier l'état du robot (lecture seule) :
+Vérifier l'état du robot (lecture seule), dans l'Invite de commandes (`cmd`) depuis le dossier du dépôt :
 
-```powershell
-ssh robot "curl -fsSL https://raw.githubusercontent.com/5nvn9z8jk7-sketch/Robot/main/speech_patch/verif_etat_robot.sh | bash"
+```bat
+scp speech_patch\verif_etat_robot.sh robot:/tmp/
+ssh robot "sed -i 's/\r$//' /tmp/verif_etat_robot.sh && bash /tmp/verif_etat_robot.sh" > %TEMP%\verif_robot.txt
 ```
 
 ## Organisation du dépôt
