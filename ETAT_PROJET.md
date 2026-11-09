@@ -45,4 +45,5 @@ Dernière mise à jour : 09/11/2026 — étape 0 : relevé E0 fait, installation
 - `bash -c 'source …'` obligatoire dans les scripts lancés par Python (dash ne connaît pas `source`) ; `bash -lc` ne source pas ROS sur ce robot.
 - `pkill -f` : toujours un motif entre crochets (`'[p]ick_and_place_node_v6'`) et jamais le chemin du programme dans la même commande ssh.
 - Relance manuelle du contrôleur : uniquement avec `-r __ns:=/ --params-file ~/speech_patch/params_ros_robot_controller.yaml` (le watchdog le fait).
+- Le shell de connexion ssh du robot est zsh : dans une commande `ssh robot "..."`, utiliser `source /opt/ros/humble/setup.zsh` (ou passer par `bash -c`).
 - Convention roues observée : `linear.x > 0` = avance.

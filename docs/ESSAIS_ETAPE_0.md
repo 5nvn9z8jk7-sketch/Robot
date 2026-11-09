@@ -59,7 +59,7 @@ Lancer `start_interface.bat`.
 Pour chaque phrase, envoyer la commande puis regarder si le pick démarre. Remplacer `PHRASE` (sans guillemets supplémentaires), par exemple `'data: attrape le cube rouge'` :
 
 ```bat
-ssh robot "source /opt/ros/humble/setup.bash && ros2 topic pub --once /vocal_detect/asr_result std_msgs/msg/String 'data: PHRASE'"
+ssh robot "source /opt/ros/humble/setup.zsh && ros2 topic pub --once /vocal_detect/asr_result std_msgs/msg/String 'data: PHRASE'"
 ```
 
 | Phrase | Attendu |
