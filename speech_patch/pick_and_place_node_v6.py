@@ -26,7 +26,8 @@ import time
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from std_msgs.msg import String
+from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
+from std_msgs.msg import String, Bool
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from interfaces.msg import ColorsInfo
@@ -76,13 +77,15 @@ class PickAndPlaceV6(Node):
         self._busy = False
         self._abort = False
         self._latest_color = None
+        self._verrou = False      # arrêt général du gardien
         self._odom_x = 0.0
         self._odom_y = 0.0
         self._odom_yaw = 0.0
         self._odom_stamp = 0.0    # time.monotonic() du dernier message /odom
         self._color_stamp = 0.0   # time.monotonic() du dernier message couleur
 
-        self.cmd_vel_pub = self.create_publisher(Twist, '/controller/cmd_vel', 1)
+        # Étape 1 : les roues passent par gardien_securite.py (obstacles, arrêt général)
+        self.cmd_vel_pub = self.create_publisher(Twist, '/robot/cmd_vel/auto', 1)
         self.tts_pub = self.create_publisher(String, '/tts_node/tts_text', 1)
         self.servo_pub = self.create_publisher(ServosPosition, 'servo_controller', 1)
 
@@ -92,6 +95,10 @@ class PickAndPlaceV6(Node):
             ColorsInfo, '/color_detect_node/color_info', self._color_cb, 1)
         self.create_subscription(
             Odometry, '/odom', self._odom_cb, 1)
+        self.create_subscription(
+            Bool, '/robot/estop_etat', self._estop_cb,
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                            reliability=ReliabilityPolicy.RELIABLE))
 
         calib = pick_calib.load_calib()
         if calib:
@@ -124,6 +131,9 @@ class PickAndPlaceV6(Node):
             return
         if not self._is_trigger(text):
             return
+        if self._verrou:
+            self._say("Arrêt général actif. Dis reprends d'abord.")
+            return
         with self._lock:
             if self._busy:
                 self.get_logger().info('Deja en cours, ignore')
@@ -131,6 +141,19 @@ class PickAndPlaceV6(Node):
             self._busy = True
             self._abort = False
         threading.Thread(target=self._run_sequence, daemon=True).start()
+
+    def _estop_cb(self, msg):
+        """Arrêt général du gardien (ESPACE, bouton, « stop ») : interrompt la séquence."""
+        self._verrou = bool(msg.data)
+        if not msg.data:
+            return
+        with self._lock:
+            running = self._busy
+            if running:
+                self._abort = True
+        self._stop()
+        if running:
+            self.get_logger().warn('🛑 ARRET D\'URGENCE (gardien) - séquence interrompue')
 
     def _color_cb(self, msg):
         with self._lock:

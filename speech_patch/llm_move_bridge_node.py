@@ -21,7 +21,7 @@ Souscrit :
   /vocal_detect/wakeup       (std_msgs/Bool)   — interruption
 
 Publie :
-  /controller/cmd_vel       (geometry_msgs/Twist) — commandes moteurs
+  /robot/cmd_vel/auto       (geometry_msgs/Twist) — vers gardien_securite (étape 1)
   /tts_node/tts_text         (std_msgs/String)     — reponse vocale
 """
 import re
@@ -30,6 +30,7 @@ import time
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 from std_msgs.msg import String, Bool
 from geometry_msgs.msg import Twist
 
@@ -89,7 +90,7 @@ class LLMMoveBridge(Node):
         self._last_asr_text = ''
         self._last_asr_is_pap = False
 
-        self.cmd_vel_pub = self.create_publisher(Twist, '/controller/cmd_vel', 1)
+        self.cmd_vel_pub = self.create_publisher(Twist, '/robot/cmd_vel/auto', 1)
         self.tts_text_pub = self.create_publisher(String, '/tts_node/tts_text', 1)
 
         self.create_subscription(
@@ -98,6 +99,10 @@ class LLMMoveBridge(Node):
             String, '/agent_process/result', self._llm_cb, 1)
         self.create_subscription(
             Bool, '/vocal_detect/wakeup', self._wakeup_cb, 1)
+        self.create_subscription(
+            Bool, '/robot/estop_etat', self._estop_cb,
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                            reliability=ReliabilityPolicy.RELIABLE))
 
         self._thread = threading.Thread(target=self._process_loop, daemon=True)
         self._thread.start()
@@ -106,9 +111,6 @@ class LLMMoveBridge(Node):
 
     def _asr_cb(self, msg):
         text = msg.data.strip()
-        if not text:
-            return
-        self.get_logger().info(f'ASR: "{text}"')
         if not text:
             return
         self.get_logger().info(f'ASR: "{text}"')
@@ -134,6 +136,13 @@ class LLMMoveBridge(Node):
                 self.get_logger().info('Reponse LLM ignoree (commande pick_and_place en cours)')
                 return
             self._llm_response = msg.data
+
+    def _estop_cb(self, msg):
+        """Arrêt général du gardien : interrompt le mouvement en cours."""
+        if msg.data:
+            with self._lock:
+                if self._moving:
+                    self.interrupt = True
 
     def _wakeup_cb(self, msg):
         with self._lock:
@@ -182,10 +191,12 @@ class LLMMoveBridge(Node):
         self.get_logger().info(
             f'Commande detectee: {direction} (dist={distance}, dur={duration})')
 
-        confirm = TTS_CONFIRM.get(direction, 'OK')
-        msg = String()
-        msg.data = confirm
-        self.tts_text_pub.publish(msg)
+        # « stop » : le gardien de sécurité annonce déjà « Arrêt général »
+        if direction != 'stop':
+            confirm = TTS_CONFIRM.get(direction, 'OK')
+            msg = String()
+            msg.data = confirm
+            self.tts_text_pub.publish(msg)
 
         threading.Thread(
             target=self._execute_movement,
@@ -225,8 +236,8 @@ class LLMMoveBridge(Node):
             elif direction == 'turn_right':
                 twist.angular.z = -DEFAULT_ANGULAR_SPEED
 
-            self.cmd_vel_pub.publish(twist)
-
+            # Répété toutes les 50 ms : le gardien considère une commande
+            # de plus de 0,3 s comme arrêtée (avant : publiée une seule fois).
             start = time.time()
             while time.time() - start < final_duration:
                 with self._lock:
@@ -234,7 +245,8 @@ class LLMMoveBridge(Node):
                         self.interrupt = False
                         self.get_logger().info('Mouvement interrompu')
                         break
-                time.sleep(0.1)
+                self.cmd_vel_pub.publish(twist)
+                time.sleep(0.05)
 
         finally:
             self.cmd_vel_pub.publish(Twist())
