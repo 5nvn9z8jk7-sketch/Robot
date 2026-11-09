@@ -203,42 +203,39 @@ class PickAndPlaceV6(Node):
 
     def _turn_to(self, angle_rad, angular_speed=0.4):
         """Rotation: +angle = cube a droite -> tourne a droite (meme convention que v5).
-        Boucle fermée sur le cap de l'odométrie (comme _drive). Si l'odom ne
-        répond pas, repli sur l'ancienne rotation chronométrée."""
+        Rotation CHRONOMÉTRÉE (durée = angle / vitesse), comme la version validée
+        le 30/10. La boucle sur le cap de l'odométrie (PR #3) a été essayée le
+        09/11 : le robot tournait ~2,4x trop et oscillait sans jamais se centrer.
+        L'odométrie est seulement mesurée et journalisée, pour diagnostic."""
         if abs(angle_rad) < TURN_DEADZONE:
             return
-        target = abs(angle_rad)
-        nominal = target / angular_speed
+        duration = abs(angle_rad) / angular_speed
         twist = Twist()
         twist.angular.z = -math.copysign(angular_speed, angle_rad)
-        use_odom = self._odom_alive()
-        mode = 'boucle odom' if use_odom else 'chrono, odom absente'
-        self.get_logger().info(f'  Rotation {math.degrees(angle_rad):+.1f}° ({mode})')
+        odom_ok = self._odom_alive()
         with self._lock:
             prev_yaw = self._odom_yaw
         turned = 0.0
         start = time.time()
-        deadline = start + 3.0 * nominal + 1.0
-        while not self._abort:
-            now = time.time()
-            if use_odom:
-                if not self._odom_alive():
-                    use_odom = False
-                    self.get_logger().warn('  odom perdue pendant la rotation -> chrono')
-                else:
-                    with self._lock:
-                        yaw = self._odom_yaw
-                    d = math.atan2(math.sin(yaw - prev_yaw), math.cos(yaw - prev_yaw))
-                    turned += abs(d)
-                    prev_yaw = yaw
-                    if turned >= target or now >= deadline:
-                        break
-            if not use_odom and now - start >= nominal:
-                break
+        while time.time() - start < duration and not self._abort:
             self.cmd_vel_pub.publish(twist)
             time.sleep(CMD_VEL_RATE)
+            if odom_ok:
+                with self._lock:
+                    yaw = self._odom_yaw
+                turned += abs(math.atan2(math.sin(yaw - prev_yaw), math.cos(yaw - prev_yaw)))
+                prev_yaw = yaw
         self._stop()
         time.sleep(0.25)
+        if odom_ok:
+            with self._lock:
+                yaw = self._odom_yaw
+            turned += abs(math.atan2(math.sin(yaw - prev_yaw), math.cos(yaw - prev_yaw)))
+            mesure = f'odom a mesuré {math.degrees(turned):.1f}°'
+        else:
+            mesure = 'odom absente'
+        self.get_logger().info(
+            f'  Rotation {math.degrees(angle_rad):+.1f}° (chrono {duration:.2f}s, {mesure})')
 
     def _drive(self, distance_m, linear_speed=0.08):
         """distance_m negatif = avance, positif = recule.
