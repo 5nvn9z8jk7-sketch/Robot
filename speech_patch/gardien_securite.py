@@ -38,10 +38,12 @@ from sensor_msgs.msg import LaserScan
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import securite_logique as sl  # noqa: E402
+from voix_rapide import VoixRapide  # noqa: E402
 
 FREQ_HZ = 20.0
 ZEROS_APRES_S = 0.5      # après la dernière commande : zéros pendant 0,5 s puis silence
 ANNONCE_OBSTACLE_S = 5.0  # pas plus d'une annonce « obstacle » toutes les 5 s
+PHRASES = ['Obstacle.', 'Arrêt général.', 'Je reprends.']  # jouées sans délai
 
 
 class GardienSecurite(Node):
@@ -75,6 +77,7 @@ class GardienSecurite(Node):
         self._derniere_cmd = 0.0
         self._annonce_obstacle = 0.0
         self._motif_precedent = ''
+        self.voix = VoixRapide(PHRASES, self._dire_tts, self.get_logger().info)
         self._publier_verrou()
         self.create_timer(1.0 / FREQ_HZ, self._tick)
         self.create_timer(0.5, self._etat)
@@ -121,6 +124,10 @@ class GardienSecurite(Node):
 
     # ── sorties ──
     def _dire(self, texte):
+        # Phrases fixes : son pré-enregistré (~0,1 s) ; sinon synthèse normale (~5 s)
+        self.voix.dire(texte)
+
+    def _dire_tts(self, texte):
         self.pub_tts.publish(String(data=texte))
 
     def _publier_verrou(self):

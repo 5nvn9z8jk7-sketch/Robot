@@ -5,15 +5,15 @@ set -euo pipefail
 D=/home/ubuntu/speech_patch
 URL=https://raw.githubusercontent.com/5nvn9z8jk7-sketch/Robot/etape-1-securite/speech_patch
 TS=$(date +%Y%m%d_%H%M%S)
-FICHIERS="securite_logique.py gardien_securite.py"
+FICHIERS="securite_logique.py gardien_securite.py voix_rapide.py"
 ROS='source /opt/ros/humble/setup.bash; source /home/ubuntu/ros2_ws/install/setup.bash'
 mkdir -p /tmp/maj_gardien "$D/sauvegardes" /tmp/watchdog_logs
 for f in $FICHIERS; do
   curl -fsSL "$URL/$f" -o "/tmp/maj_gardien/$f"
   python3 -m py_compile "/tmp/maj_gardien/$f"
 done
-grep -q FACTEUR_MIN /tmp/maj_gardien/securite_logique.py || { echo "ERREUR: version inattendue (cache GitHub ?), rien n'est remplacé"; exit 1; }
-for f in $FICHIERS; do cp "$D/$f" "$D/sauvegardes/$f.$TS"; cp "/tmp/maj_gardien/$f" "$D/$f"; done
+grep -q VoixRapide /tmp/maj_gardien/gardien_securite.py || { echo "ERREUR: version inattendue (cache GitHub ?), rien n'est remplacé"; exit 1; }
+for f in $FICHIERS; do [ -f "$D/$f" ] && cp "$D/$f" "$D/sauvegardes/$f.$TS"; cp "/tmp/maj_gardien/$f" "$D/$f"; done
 echo "Fichiers remplacés (anciens : sauvegardes/*.$TS)"
 pkill -f '[g]ardien_securite.py' || true
 sleep 2
