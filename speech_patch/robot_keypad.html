@@ -305,7 +305,7 @@ const VOICE_CMDS = {
   3: 'Demande au robot comment ça va',
 };
 
-const PICK_CMD = 'Attrape le cube rouge et mets-le dans la boîte';
+const PICK_CMD = 'Attrape le cube rouge';  // la dépose dans le bac n'existe pas encore (étape 3)
 
 function log(msg, type) {
   const box = document.getElementById('logBox');
@@ -523,10 +523,9 @@ function sendScan() {
 
 // === GRIPPER TOGGLE (Ouvre/Ferme la pince) ===
 function sendGripper() {
-  log('[O] Toggle pince (ouvre/ferme)', 'cmd');
-  if (!ws || ws.readyState !== WebSocket.OPEN) { log('Robot non connecte', 'err'); return; }
-  ws.send(JSON.stringify({ op: 'publish', topic: '/vocal_detect/asr_result', msg: { data: 'ouvre ou ferme la pince' } }));
-  log('[O] Commande pince envoyee', 'ok');
+  // Aucun nœud ne traite encore cette commande : la touche est désactivée
+  // pour ne pas laisser croire que la pince bouge (prévu à l'étape 3).
+  log('[O] Pince : pas encore disponible (prévu étape 3)', 'warn');
 }
 
 

@@ -173,7 +173,10 @@ class RobotWatchdog:
                 print(f"   ⚠️  Device USB encore occupe, attente supplémentaire...")
                 time.sleep(5)
         else:
-            self._run_cmd(f"pkill -f {node_name} 2>/dev/null", timeout=5)
+            # Motif entre crochets : sans eux, pkill tue aussi le « bash -c » qui
+            # le lance (sa ligne de commande contient le nom du nœud).
+            pattern = f"[{node_name[0]}]{node_name[1:]}"
+            self._run_cmd(f"pkill -f '{pattern}' 2>/dev/null", timeout=5)
             time.sleep(1)
 
         # Lancer le nouveau

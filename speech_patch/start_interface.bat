@@ -19,15 +19,16 @@ if errorlevel 1 (
 )
 echo   ✅ Robot en ligne
 
-:: Vérifier et lancer le nœud moteurs si nécessaire
+:: Vérifier le nœud moteurs (SANS le relancer : c'est le rôle du watchdog du robot,
+:: qui le relance avec les bons paramètres. L'ancienne relance ici était "nue"
+:: et faisait mourir imu_raw et odom.)
 echo [2/4] Vérification du nœud moteurs...
-ssh robot "bash -lc 'source /home/ubuntu/ros2_ws/install/setup.bash && ros2 node list 2>/dev/null | grep -q ros_robot_controller && echo ACTIF || echo INACTIF'" 2>nul > temp_motors.txt
-findstr /C:"ACTIF" temp_motors.txt >nul 2>&1
+ssh robot "bash -c 'source /opt/ros/humble/setup.bash; source /home/ubuntu/ros2_ws/install/setup.bash; ros2 node list 2>/dev/null | grep -q ros_robot_controller && echo ACTIF || echo INACTIF'" 2>nul > temp_motors.txt
+:: /B /X : la ligne doit être exactement ACTIF (avant, "INACTIF" était aussi reconnu)
+findstr /B /X /C:"ACTIF" temp_motors.txt >nul 2>&1
 if errorlevel 1 (
-    echo   ⚠️  Nœud moteurs inactif — lancement...
-    ssh robot "bash -lc 'source /home/ubuntu/ros2_ws/install/setup.bash && nohup ros2 run ros_robot_controller ros_robot_controller > /tmp/rrc.log 2>&1 &'"
-    timeout /t 3 /nobreak >nul
-    echo   ✅ Nœud moteurs lancé
+    echo   ⚠️  Nœud moteurs non détecté. Attendre 1 minute que le watchdog le relance,
+    echo      ou regarder : ssh robot "tail -20 /tmp/watchdog.log"
 ) else (
     echo   ✅ Nœud moteurs actif
 )

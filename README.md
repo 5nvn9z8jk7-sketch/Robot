@@ -1,158 +1,48 @@
-# Robot — Toy Sorter (Hiwonder ROSOrin Pro)
+# Robot — Hiwonder ROSOrin Pro
 
-Projet : le robot **Hiwonder ROSOrin Pro (Jetson Orin NX Super 16GB)** ramasse des jouets
-au sol et les range dans un bac, de façon autonome.
+Robot mobile (roues mecanum, Jetson Orin NX, ROS 2 Humble) avec bras 6 axes, lidar, caméra RGB + profondeur Aurora 930 et micro WonderEcho Pro.
 
-Le projet est développé **virtuellement sur PC** : toute la logique (détection, navigation,
-préhension, orchestration) est écrite et testée en simulation. Au reçu du robot, il suffit
-de brancher les backends ROS2 réels.
+**Objectif** : lui donner des ordres à la voix (micro du robot ou du PC) ou depuis une page Web, et qu'il les exécute seul avec tous ses capteurs.
 
-## Structure
+L'état détaillé est dans [`ETAT_PROJET.md`](ETAT_PROJET.md). Le plan de travail vient de l'[audit du 05/11/2026](docs/AUDIT_2026-11-05.md).
 
-```
-├── training/                    # Entraînement YOLO (à exécuter sur PC avec GPU)
-│   ├── generate_virtual_dataset.py   # Dataset synthétique de test
-│   ├── prepare_dataset.py            # Fusion/normalisation de datasets (publics + perso)
-│   ├── train_yolo.py                 # Entraînement réel + export TensorRT
-│   └── toys.yaml.example             # Format de dataset attendu
-├── sim/
-│   └── run_virtual_demo.py      # Simulation bout-en-bout sans robot
-└── ros2_ws/src/toy_sorter/      # Package ROS2 (à installer sur le robot)
-    ├── package.xml
-    ├── setup.py
-    ├── toysorter/
-    │   ├── core/                # Types, monde virtuel, state machine
-    │   ├── perception/          # Interface + backend virtuel + backend ROS2
-    │   ├── navigation/          # Interface + backend virtuel + backend Nav2
-    │   ├── manipulation/        # Interface + backend virtuel + backend bras
-    │   └── tools/               # CLI simulation
-    └── tests/                   # Tests unitaires et d'intégration
-```
+## Ce qui fonctionne aujourd'hui
 
-## Démarrage rapide (sans robot)
+| Fonction | Fichier | Remarque |
+|---|---|---|
+| Saisie du cube rouge | `speech_patch/pick_and_place_node_v6.py` | calibrée par démonstration (`teach_pick_v6.py` → `pick_calib.json`) |
+| Détection couleur | `speech_patch/simple_color_detect_v3.py` | ~10 Hz sur l'image RGB |
+| Surveillance des nœuds | `speech_patch/robot_watchdog.py` | relance automatique, démarrage au boot via crontab |
+| Surveillance caméra | `speech_patch/camera_supervisor.py` | reset USB automatique |
+| Ordres simples à la voix | `speech_patch/llm_move_bridge_node.py` | avance, recule, tourne, stop, salutations |
+| Voix française hors ligne | `speech_patch/speech_offline_patch.py` | ASR + TTS sherpa-onnx, LLM Ollama sur le PC |
+| Micro du PC | `speech_patch/pc_mic_sender.py` → `ws_audio_asr_node.py` | port 9092 |
+| Page de commande | `speech_patch/robot_keypad.html` | lancée par `start_interface.bat` sur le PC |
 
-```bash
-# 1. Tests
-python3 -m pytest ros2_ws/src/toy_sorter/tests -q
+Pas encore fiable : la mission « attrape tous les cubes », le retour à la base, la dépose dans le bac, l'évitement d'obstacles (voir l'audit).
 
-# 2. Simulation complète : le robot virtuel range N jouets
-python3 sim/run_virtual_demo.py --toys 8 --seed 42
+## Démarrage
 
-# 3. Entraînement YOLO simulé (valide la chaîne, sans GPU)
-python3 training/train_yolo.py --dry-run
+Le robot démarre tout seul : la crontab lance `speech_patch/start_watchdogs.sh`, qui lance les superviseurs, qui lancent les nœuds.
 
-# 4. Dataset synthétique (images + labels YOLO)
-python3 training/generate_virtual_dataset.py --n 200
+Sur le PC : double-clic sur `speech_patch/start_interface.bat`, puis ouvrir `http://localhost:8888/robot_keypad.html`.
+
+Vérifier l'état du robot (lecture seule) :
+
+```powershell
+ssh robot "curl -fsSL https://raw.githubusercontent.com/5nvn9z8jk7-sketch/Robot/main/speech_patch/verif_etat_robot.sh | bash"
 ```
 
-## Datasets publics annotés
-
-Des datasets de jouets annotés existent sur [Roboflow Universe](https://universe.roboflow.com) :
-
-- [Toy Dataset TIPS (~3000 images)](https://universe.roboflow.com/tips-wis6y/toy-dataset-bfq0d)
-- [kid-toys (~1000 images)](https://universe.roboflow.com/flektest/kid-toys/dataset/16)
-- [Soft-toy (peluches)](https://universe.roboflow.com/felipe-guimaraes/soft-toy/dataset/1)
-
-Téléchargez-les au **format YOLOv8**, puis fusionnez-les avec `prepare_dataset.py` :
-
-```bash
-# Tous les jouets vers une classe unique "toy"
-python training/prepare_dataset.py \
-    --sources ../datasets/roboflow_tips ../datasets/roboflow_kidtoys \
-    --classes toy \
-    --class-map ../datasets/roboflow_tips/data.yaml:*:toy \
-    --class-map ../datasets/roboflow_kidtoys/data.yaml:*:toy \
-    --out ../datasets/toys_merged
-
-# Puis entraîner
-python training/train_yolo.py --data ../datasets/toys_merged/data.yaml --epochs 100
-```
-
-Stratégie recommandée : entraîner d'abord sur les datasets publics (modèle
-générique), puis **fine-tuner** avec 50-100 photos de vos propres jouets —
-le modèle générique peut aussi pré-annoter vos photos dans Roboflow pour
-'accélérer l'annotation manuelle.
-
-## Entraînement réel (sur votre PC, GPU recommandé)
-
-1. Prendre **200–500 photos** de vos jouets (angles/lumières/fonds variés)
-2. Annoter sur [Roboflow](https://roboflow.com) ou Label Studio (classes : `teddy`, `cube`, `car`)
-3. Exporter au format YOLO, créer `training/toys.yaml` (voir `toys.yaml.example`)
-4. Entraîner :
-   ```bash
-   pip install ultralytics
-   python3 training/train_yolo.py --data toys.yaml --epochs 100
-   ```
-5. Exporter pour la Jetson (à faire sur le robot) :
-   ```bash
-   python3 training/train_yolo.py --export best.pt   # → TensorRT engine FP16
-   ```
-
-## Installation sur le robot (à la réception)
-
-```bash
-# Sur la Jetson (ROS2 Humble/Jazzy déjà installé par Hiwonder)
-cd ~/ros2_ws/src
-git clone <ce dépôt> Robot
-cp -r Robot/ros2_ws/src/toy_sorter .
-cd ~/ros2_ws
-rosdep install --from-paths src --ignore-src -y
-colcon build --packages-select toy_sorter
-source install/setup.bash
-
-# Simulation sur le robot (vérifie l'installation)
-ros2 run toy_sorter toy_sorter_sim --toys 5
-```
-
-Puis connecter les backends réels (chaque fichier contient le pseudo-code guide) :
-- `toysorter/perception/ros2_backend.py` → caméra RGB-D + YOLO TensorRT + TF
-- `toysorter/navigation/ros2_backend.py` → Nav2 `NavigateToPose`
-- `toysorter/manipulation/ros2_backend.py` → SDK bras Hiwonder
-
-## Auto-apprentissage : le robot s'améliore de son expérience
-
-Le module `toysorter/learning/` implémente une boucle d'apprentissage continu :
+## Organisation du dépôt
 
 ```
-[Robot range les jouets] → détections incertaines collectées
-        ↓
-Grasp réussi → positif confirmé    Grasp raté (cible sûre) → négatif confirmé
-        ↓
-Buffer d'expériences → réentraînement périodique → modèle déployé mis à jour
+README.md, ETAT_PROJET.md   état actuel
+docs/                       audit, guides valides, essais par étape
+docs/historique/            anciens comptes rendus de session (référence)
+speech_patch/               code déployé sur le robot (/home/ubuntu/speech_patch)
+speech_patch/archive/       anciennes versions, diagnostics ponctuels, anciens lanceurs
+ros2_ws/src/toy_sorter/     simulation « range-jouets » (non reliée au robot réel)
+sim/, training/             simulation et entraînement YOLO
 ```
 
-- **Collecte ciblée** : seules les détections *incertaines* sont apprises (les
-  cas sûrs n'apportent rien, les cas trop faibles sont du bruit)
-- **Signaux objectifs** : le succès/échec du grasp sert de label — aucune
-  annotation humaine nécessaire pour les cas courants
-- **Pseudo-labels** : une observation proche et sûre corrige une observation
-  douteuse de la même cible
-- **Garde-fous** : quota de négatifs par batch pour éviter le collapse du modèle
-
-En simulation :
-
-```bash
-python3 sim/learning_demo.py
-# → les échecs de grasp diminuent round après round
-```
-
-Sur le robot : le backend perception réelle (`ros2_backend.py`) enverra ses
-frames au même `LearningMonitor` ; le réentraînement s'effectuera sur votre PC
-GPU (fine-tuning de `best.pt`, ~5 min par cycle) puis le modèle sera recopié
-sur la Jetson.
-
-## Architecture
-
-```
-Perception (YOLO + profondeur) → cible 3D
-        ↓
-FSM : SEARCHING → NAV_TO_TOY → GRASPING → LIFTING → NAV_TO_BIN → PLACING ↺
-        ↓
-Navigation (Nav2)      Manipulation (bras + pince)
-```
-
-- Les **interfaces** (`PerceptionBackend`, `NavigationBackend`, `ManipulationBackend`)
-  sont communes aux deux mondes.
-- Les **backends virtuels** simulent bruit de détection, dropout, échecs de grasp.
-- Les **backends ROS2** s'activent sur le robot sans changer la FSM.
-- La FSM gère les retries (max 3 par jouet) et repasse en recherche après abandon.
+Règle : les fichiers actifs de `speech_patch/` gardent leur nom et leur place, car le démarrage automatique et le watchdog les appellent par leur chemin sur le robot.
