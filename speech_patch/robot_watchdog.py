@@ -99,7 +99,11 @@ class RobotWatchdog:
 
     def _get_ros_env(self):
         """Retourne les commandes pour sourcer ROS2."""
+        # XDG_RUNTIME_DIR : sans lui, les programmes lancés au boot (crontab)
+        # ne trouvent pas le service audio -> le TTS ne sortait aucun son
+        # (vérifié le 09/11 : même synthèse, son avec, silence sans).
         return (
+            "export XDG_RUNTIME_DIR=/run/user/1000 && "
             "source /opt/ros/humble/setup.bash && "
             "source /home/ubuntu/ros2_ws/install/setup.bash && "
             "source /home/ubuntu/third_party/aurora_ws/install/setup.bash 2>/dev/null; "
@@ -128,7 +132,9 @@ class RobotWatchdog:
         """Vérifie si un topic publie des messages."""
         if topic is None:
             return True  # Pas de test de topic
-        cmd = f"{self.ros_env} timeout {timeout} ros2 topic hz {topic} 2>/dev/null | head -1 | grep -q 'average rate'"
+        # Correction faite sur le robot (récupérée le 09/11) : sortie non bufferisée
+        # et sans « head -1 » (la 1re ligne n'est pas toujours « average rate »).
+        cmd = f"{self.ros_env} timeout {timeout} env PYTHONUNBUFFERED=1 ros2 topic hz {topic} 2>/dev/null | grep -q 'average rate'"
         rc, _, _ = self._run_cmd(cmd, timeout=timeout + 2)
         return rc == 0
 
@@ -173,7 +179,10 @@ class RobotWatchdog:
                 print(f"   ⚠️  Device USB encore occupe, attente supplémentaire...")
                 time.sleep(5)
         else:
-            self._run_cmd(f"pkill -f {node_name} 2>/dev/null", timeout=5)
+            # Motif entre crochets : sans eux, pkill tue aussi le « bash -c » qui
+            # le lance (sa ligne de commande contient le nom du nœud).
+            pattern = f"[{node_name[0]}]{node_name[1:]}"
+            self._run_cmd(f"pkill -f '{pattern}' 2>/dev/null", timeout=5)
             time.sleep(1)
 
         # Lancer le nouveau
@@ -236,7 +245,12 @@ class RobotWatchdog:
                 count = self._fail_counts.get(node_name, 0) + 1
                 self._fail_counts[node_name] = count
                 if count >= 2:
-                    issues.append((node_name, launch_cmd, priority, delay, f"{reason} (x{count})"))
+                    # Correction faite sur le robot (récupérée le 09/11) : ces nœuds
+                    # sont lancés à la main, le watchdog ne fait que les surveiller.
+                    if node_name in ("ws_audio_asr", "agent_process"):
+                        status += " [surveillance seule, lancement externe]"
+                    else:
+                        issues.append((node_name, launch_cmd, priority, delay, f"{reason} (x{count})"))
                 else:
                     status += " [1er échec, on attend le prochain cycle]"
 

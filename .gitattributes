@@ -1,0 +1,7 @@
+# Les scripts executes sur le robot (Linux) doivent garder des fins de ligne LF,
+# meme quand le depot est clone sous Windows (sinon : $'\r': command not found).
+*.sh   text eol=lf
+*.py   text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.bat  text eol=crlf
