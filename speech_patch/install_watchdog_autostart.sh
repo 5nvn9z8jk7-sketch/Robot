@@ -1,33 +1,17 @@
 #!/bin/bash
-# install_watchdog_autostart.sh — Lance le watchdog automatiquement au boot du robot
-# À exécuter UNE SEULE FOIS sur le robot
+# install_watchdog_autostart.sh — Démarre les superviseurs automatiquement au boot du robot
+# À exécuter UNE SEULE FOIS sur le robot (nécessite start_watchdogs.sh déployé)
 
-echo "=== Installation du watchdog en autostart ==="
+echo "=== Installation des superviseurs en autostart ==="
 
-# Créer un script de lancement
-cat > /home/ubuntu/start_watchdog.sh << 'EOF'
-#!/bin/bash
-source /opt/ros/humble/setup.bash
-source /home/ubuntu/ros2_ws/install/setup.bash
-source /home/ubuntu/third_party/aurora_ws/install/setup.bash 2>/dev/null
+# Crontab @reboot — sleep 30 : laisse bringup démarrer ros_robot_controller/caméra
+# avant que les superviseurs ne testent et ne relancent quoi que ce soit.
+# On supprime aussi les anciennes lignes (start_watchdog.sh, camera_watchdog…)
+# pour garantir UN SEUL point d'entrée au boot.
+(crontab -l 2>/dev/null | grep -vE 'start_watchdog|camera_watchdog|start_camera_supervisor'
+ echo "@reboot sleep 30 && bash /home/ubuntu/speech_patch/start_watchdogs.sh >> /tmp/watchdogs_boot.log 2>&1") | crontab -
 
-# Attendre que ROS2 soit prêt
-sleep 10
-
-# Lancer le watchdog
-nohup python3 /home/ubuntu/speech_patch/robot_watchdog.py --interval 10 --max-restarts 5 > /tmp/watchdog.log 2>&1 &
-echo "Watchdog autostart lancé PID $!"
-EOF
-
-chmod +x /home/ubuntu/start_watchdog.sh
-
-# Ajouter au crontab (lance au boot)
-(crontab -l 2>/dev/null; echo "@reboot /home/ubuntu/start_watchdog.sh") | crontab -
-
-echo "✅ Watchdog installé en autostart (crontab @reboot)"
+echo "✅ Autostart installé :"
+crontab -l | grep -E 'watchdog|supervisor'
 echo ""
-echo "Vérification:"
-echo "  crontab -l | grep watchdog"
-echo "  tail -f /tmp/watchdog.log"
-echo ""
-echo "Le watchdog démarrera automatiquement à chaque boot du robot."
+echo "Les superviseurs (nœuds ROS + caméra) démarreront seuls à chaque boot du robot."

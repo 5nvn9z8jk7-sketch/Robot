@@ -17,7 +17,7 @@ Nœuds surveillés:
   - llm_move_bridge       (pont mouvement Ollama)
   - autonomous_mission_node (missions autonomes)
   - simple_color_detect   (détection couleur)
-  - servo_controller      (bras robotique)
+  - servo_manager         (bras robotique — nœud réel, ex-servo_controller)
   - odom_publisher        (odométrie)
 
 Usage sur le robot:
@@ -39,12 +39,12 @@ import os
 NODES_CONFIG = [
     # (nom, commande, topic à vérifier, priorité, delai avant test)
     ("ros_robot_controller",
-     "ros2 run ros_robot_controller ros_robot_controller",
+     "/home/ubuntu/ros2_ws/install/ros_robot_controller/lib/ros_robot_controller/ros_robot_controller --ros-args -r __ns:=/ --params-file /home/ubuntu/speech_patch/params_ros_robot_controller.yaml",
      "/ros_robot_controller/imu_raw", 1, 3),
     ("rosbridge_websocket",
      "ros2 launch rosbridge_server rosbridge_websocket_launch.xml",
      None, 1, 5),  # Pas de topic spécifique, on teste le port
-    # ("aurora", ...) — supervisé par camera_watchdog_v2.sh (restart flux dédié),
+    # ("aurora", ...) — supervisé par camera_supervisor.py (relance dediée + reset USB),
     # ne pas le gérer ici pour éviter les doubles redémarrages USB.
     ("pick_and_place_node_v6",
      "python3 /home/ubuntu/speech_patch/pick_and_place_node_v6.py",
@@ -54,7 +54,7 @@ NODES_CONFIG = [
      "/vocal_detect/asr_result", 2, 0),
     ("tts_node",
      "bash -c 'export ASR_MODE=offline ASR_LANGUAGE=fr MIC_TYPE=xf; ros2 run large_models tts_node'",
-     "/tts_node/tts_text", 1, 3),
+     None, 1, 3),  # tts_text = topic de requetes (ne publie jamais spontanement)
     ("agent_process",
      None,
      "/agent_process/result", 2, 0),
@@ -67,7 +67,7 @@ NODES_CONFIG = [
     ("simple_color_detect",
      "python3 /home/ubuntu/speech_patch/simple_color_detect_v3.py",
      "/color_detect_node/color_info", 1, 3),
-    ("servo_controller",
+    ("servo_manager",
      None,
      None, 1, 0),
     ("odom_publisher",
@@ -88,6 +88,8 @@ class RobotWatchdog:
         self.running = True
         self._camera_check_count = 0
         self._last_camera_ok = time.time()
+        # Compteur d'échecs consécutifs par nœud (anti faux-négatifs ros2 topic hz)
+        self._fail_counts = {}
 
         # Créer le répertoire de logs
         os.makedirs(LOG_DIR, exist_ok=True)
@@ -106,8 +108,9 @@ class RobotWatchdog:
     def _run_cmd(self, cmd, timeout=10):
         """Exécute une commande shell et retourne (returncode, stdout, stderr)."""
         try:
+            # bash obligatoire : /bin/sh (dash) ne connait pas "source" utilisé par ros_env
             result = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True, timeout=timeout
+                ["bash", "-c", cmd], capture_output=True, text=True, timeout=timeout
             )
             return result.returncode, result.stdout, result.stderr
         except subprocess.TimeoutExpired:
@@ -121,7 +124,7 @@ class RobotWatchdog:
         rc, _, _ = self._run_cmd(cmd, timeout=8)
         return rc == 0
 
-    def _is_topic_publishing(self, topic, timeout=3):
+    def _is_topic_publishing(self, topic, timeout=12):
         """Vérifie si un topic publie des messages."""
         if topic is None:
             return True  # Pas de test de topic
@@ -200,27 +203,42 @@ class RobotWatchdog:
             # Vérifier si le nœud est actif
             active = self._is_node_active(node_name)
 
+            reason = None
             if not active:
                 status = "❌ INACTIF"
-                issues.append((node_name, launch_cmd, priority, delay, "node down"))
+                reason = "node down"
             else:
                 # Vérifier si le topic publie (si applicable)
                 if topic:
                     publishing = self._is_topic_publishing(topic)
                     if not publishing:
                         status = "⚠️  Nœud actif mais topic mort"
-                        issues.append((node_name, launch_cmd, priority, delay, f"topic {topic} mort"))
+                        reason = f"topic {topic} mort"
                     else:
                         status = "✅ OK"
+                # Vérification spéciale pour rosbridge (port 9090)
+                elif node_name == "rosbridge_websocket":
+                    port_ok = self._is_port_open(9090)
+                    if port_ok:
+                        status = "✅ OK"
+                    else:
+                        status = "⚠️ Port 9090 fermé"
+                        reason = "port 9090 fermé"
                 else:
-                    # Vérification spéciale pour rosbridge (port 9090)
-                    if node_name == "rosbridge_websocket":
-                        port_ok = self._is_port_open(9090)
-                        status = "✅ OK" if port_ok else "⚠️ Port 9090 fermé"
-                        if not port_ok:
-                            issues.append((node_name, launch_cmd, priority, delay, "port 9090 fermé"))
-                    else:
-                        status = "✅ OK"
+                    status = "✅ OK"
+
+            # Anti faux-négatifs : "ros2 topic hz" échoue parfois sous charge
+            # alors que le nœud va bien. On ne redémarre qu'après 2 échecs
+            # CONSÉCUTIFS du même nœud.
+            if reason is None:
+                self._fail_counts.pop(node_name, None)
+            else:
+                count = self._fail_counts.get(node_name, 0) + 1
+                self._fail_counts[node_name] = count
+                if count >= 2:
+                    issues.append((node_name, launch_cmd, priority, delay, f"{reason} (x{count})"))
+                else:
+                    status += " [1er échec, on attend le prochain cycle]"
 
             icon = "🔴" if priority == 1 else ("🟡" if priority == 2 else "🟢")
             print(f"  {icon} {node_name:30s} {status}")
@@ -239,34 +257,11 @@ class RobotWatchdog:
         else:
             print(f"\n✅ Tous les systèmes opérationnels")
 
-        # Vérification spéciale caméra: redémarrage forcé si inactive depuis >60s
-        self._camera_check_count += 1
-        camera_ok = self._is_topic_publishing("/depth_cam/depth0/image_raw", timeout=2)
-        if camera_ok:
-            self._last_camera_ok = time.time()
-        else:
-            inactive_since = time.time() - self._last_camera_ok
-            if inactive_since > 60:
-                print(f"📷 Caméra inactive depuis {int(inactive_since)}s — redémarrage forcé!")
-                self._force_camera_restart()
-                self._last_camera_ok = time.time()  # reset timer
+        # NOTE: la caméra aurora est gérée EXCLUSIVEMENT par camera_supervisor.py
+        # (vérification du flux + relance USB dédiée). Ne pas la gérer ici :
+        # double gestion = conflits de kill/relance (vécu 01/11).
 
         return len(issues)
-
-    def _force_camera_restart(self):
-        """Redémarre la caméra de force (si elle bug après utilisation)."""
-        print(f"📷 Redémarrage forcé caméra — {time.strftime('%H:%M:%S')}")
-        # Kill agressif: SIGKILL sur tous les processus lies a la camera
-        self._run_cmd("pkill -9 -f aurora930 2>/dev/null", timeout=5)
-        self._run_cmd("pkill -9 -f deptrum 2>/dev/null", timeout=5)
-        self._run_cmd("pkill -9 -f aurora930_node 2>/dev/null", timeout=5)
-        time.sleep(5)  # Attendre liberation USB (critique!)
-        launch_cmd = "bash -c 'source /home/ubuntu/third_party/aurora_ws/install/setup.bash 2>/dev/null; ros2 run deptrum-ros-driver-aurora930 aurora930_node --ros-args -r depth/image_raw:=depth_cam/depth0/image_raw -r ir/camera_info:=depth_cam/depth0/camera_info -r ir/image_raw:=depth_cam/ir0/image_raw -r points2:=depth_cam/depth0/points -r rgb/camera_info:=depth_cam/rgb0/camera_info -r rgb/image_raw:=depth_cam/rgb0/image_raw'"
-        log_file = os.path.join(LOG_DIR, "aurora_force_restart.log")
-        full_cmd = f"{self.ros_env} nohup {launch_cmd} > {log_file} 2>&1 &"
-        self._run_cmd(full_cmd, timeout=5)
-        self.restart_counts["aurora"] = self.restart_counts.get("aurora", 0) + 1
-        self.last_restart["aurora"] = time.time()
 
     def run(self):
         """Boucle principale du watchdog."""

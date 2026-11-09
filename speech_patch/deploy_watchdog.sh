@@ -1,34 +1,27 @@
 #!/bin/bash
-# deploy_watchdog.sh — Déploie et lance le watchdog sur le robot
+# deploy_watchdog.sh — Déploie et lance les superviseurs sur le robot (détachés via setsid)
+# Le démarrage au boot est installé par install_watchdog_autostart.sh (une seule fois)
 
 LOCAL_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-echo "=== Déploiement du Watchdog ==="
+echo "=== Déploiement des superviseurs ==="
 
 if ! ping -c 1 -W 2 192.168.1.30 > /dev/null 2>&1; then
     echo "❌ Robot non accessible"
     exit 1
 fi
 
-# Transférer
-scp "$LOCAL_DIR/robot_watchdog.py" "robot:/home/ubuntu/speech_patch/"
-echo "✅ Fichier transféré"
+# Transférer les superviseurs + le lanceur
+scp "$LOCAL_DIR/robot_watchdog.py" \
+    "$LOCAL_DIR/camera_supervisor.py" \
+    "$LOCAL_DIR/start_camera_supervisor.sh" \
+    "$LOCAL_DIR/start_watchdogs.sh" \
+    "robot:/home/ubuntu/speech_patch/"
+echo "✅ Fichiers transférés"
 
-# Arrêter l'ancien watchdog
-ssh robot "pkill -f robot_watchdog 2>/dev/null; sleep 1"
-
-# Lancer le watchdog
-ssh robot "bash -c '
-source /opt/ros/humble/setup.bash
-source /home/ubuntu/ros2_ws/install/setup.bash
-nohup python3 /home/ubuntu/speech_patch/robot_watchdog.py --interval 10 --max-restarts 5 > /tmp/watchdog.log 2>&1 &
-echo \"Watchdog lancé PID \$!\"
-'"
-
-sleep 2
+# Lancer via le script idempotent (setsid nohup → survit à la fin de la session ssh)
+ssh robot "bash /home/ubuntu/speech_patch/start_watchdogs.sh"
 
 echo ""
-echo "✅ Watchdog actif"
-echo ""
-echo "Vérifier: ssh robot 'tail -f /tmp/watchdog.log'"
-echo "Arrêter:  ssh robot 'pkill -f robot_watchdog'"
+echo "Vérifier : ssh robot 'tail -f /tmp/watchdog.log ~/camera_events.log'"
+echo "Arrêter  : ssh robot 'pkill -f \"[r]obot_watchdog.py\"; pkill -f \"[c]amera_supervisor.py\"'"
