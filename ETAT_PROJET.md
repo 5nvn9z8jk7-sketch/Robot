@@ -1,6 +1,22 @@
 # État du projet
 
-Dernière mise à jour : 09/11/2026 — étape 0 : relevé E0 fait, installation (E1) prête.
+Dernière mise à jour : 09/11/2026 21:05 — étape 0 : E0 à E5 validés + voix réparée. **Reste E6 (redémarrage complet), puis fusion de la PR #4.**
+
+## Essais étape 0 du 09/11
+
+| Essai | Résultat |
+|---|---|
+| E0 relevé | fait |
+| E1 installation (pick v6, watchdog, mission) | OK, sauvegardes dans `~/speech_patch/sauvegardes/` |
+| E2 interface | OK après correction de la détection moteurs (`findstr /X` incompatible avec la sortie Linux) |
+| E3 arrêt d'urgence | OK : ESPACE pendant l'approche, ESPACE pendant la descente du bras, mot « stop » |
+| E4 rotation | **la boucle odométrie (PR #3) oscillait** (robot tournait ~2,4x trop, l'odom semble en retard, pas fausse d'échelle : 8,9° mesurés pour 9,7°). Retour à la rotation chronométrée du 30/10 → centrage en 1 rotation, cube attrapé |
+| E5 déclencheurs | OK : seul « attrape le cube rouge » lance le pick ; « trouve la balle rouge », « regarde le cube », « attrape tous les cubes » non. Tester avec `ros2 topic pub --once -w 3` (sans `-w`, des abonnés ratent le message) |
+| Voix | muette : le TTS lancé au boot n'avait pas `XDG_RUNTIME_DIR`. Watchdog corrigé (`maj_tts_son.sh`), **voix OK** |
+| E6 redémarrage | **à faire** : vérifier 1 watchdog, 1 pick, 1 mission, voix présente après boot |
+
+Observé en passant : la mission « attrape tous les cubes » annonce « 1 cube attrapé » sans rien vérifier (défaut F3, étape 3).
+
 
 ## Relevé du robot du 09/11 (E0)
 
