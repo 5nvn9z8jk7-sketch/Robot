@@ -79,6 +79,12 @@ def test_obstacle_devant_arrete_et_ralentit():
     assert abs(vx - 0.15) < 1e-6
 
 
+def test_arret_franc_pres_du_seuil():
+    # 0,33 m : facteur 0,10 < 0,15 -> arrêt (avant : le robot rampait à 10 %)
+    assert sl.facteur_vitesse(0.33) == 0.0
+    assert sl.facteur_vitesse(0.36) > 0.0
+
+
 def test_obstacle_a_cote_ne_gene_pas_l_avance():
     g = sl.Gardien()
     g.lidar(0.0, *scan_lidar({90: 0.20}))          # mur à gauche

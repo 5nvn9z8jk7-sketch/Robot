@@ -25,6 +25,8 @@ VMAX_ANG = 2.0             # rad/s
 VMAX_RECUL = 0.10          # m/s en marche arrière (zone aveugle)
 DUREE_MAX_RECUL_S = 5.0    # recul continu maximal, puis arrêt
 FRAIS_S = 0.30             # une commande plus vieille est considérée comme arrêtée
+FACTEUR_MIN = 0.15         # en dessous : arrêt franc (sinon le robot « rampe » vers le seuil
+                           # sans jamais l'atteindre — vu à l'essai F4 du 10/11)
 
 MOTS_ARRET = ['stop', 'arrete', 'arreter', 'arretes', 'arrete toi', 'halte',
               'urgence', 'stoppe', 'pas bouger', 'ne bouge plus']
@@ -81,13 +83,16 @@ def distance_dans_cone(angle_min, increment, distances, direction_deg,
     return best
 
 
-def facteur_vitesse(distance, arret=DIST_ARRET_M, ralenti=DIST_RALENTI_M):
-    """1 = pleine vitesse, 0 = arrêt, linéaire entre les deux seuils."""
+def facteur_vitesse(distance, arret=DIST_ARRET_M, ralenti=DIST_RALENTI_M,
+                    facteur_min=FACTEUR_MIN):
+    """1 = pleine vitesse, 0 = arrêt, linéaire entre les deux seuils,
+    arrêt franc quand le facteur passe sous facteur_min."""
     if not math.isfinite(distance) or distance >= ralenti:
         return 1.0
     if distance <= arret:
         return 0.0
-    return (distance - arret) / (ralenti - arret)
+    f = (distance - arret) / (ralenti - arret)
+    return 0.0 if f < facteur_min else f
 
 
 def borner(v, vmax):

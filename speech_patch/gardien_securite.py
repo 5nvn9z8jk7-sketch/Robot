@@ -138,13 +138,16 @@ class GardienSecurite(Node):
             m = Twist()
             m.linear.x, m.linear.y, m.angular.z = float(vx), float(vy), float(wz)
             self.pub_cmd.publish(m)
-        if motif and motif != self._motif_precedent:
+        # Journal : seulement quand la situation change (obstacle / arrêt / recul…),
+        # pas à chaque variation de distance (10 lignes/s avant).
+        categorie = motif.split(' à ')[0] + (' arrêt' if 'arrêt' in motif else '')
+        if motif and categorie != self._motif_precedent:
             self.get_logger().warn(f'⚠️ {motif}')
             if motif.startswith('obstacle') and 'arrêt' in motif \
                     and t - self._annonce_obstacle > ANNONCE_OBSTACLE_S:
                 self._annonce_obstacle = t
                 self._dire('Obstacle.')
-        self._motif_precedent = motif
+        self._motif_precedent = categorie if motif else ''
 
     def _etat(self):
         self.pub_etat.publish(String(data=json.dumps({
