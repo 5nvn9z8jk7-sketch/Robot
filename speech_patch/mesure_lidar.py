@@ -8,9 +8,10 @@
 Sert à savoir où est « l'avant » du robot pour le lidar : poser une boîte
 à ~40 cm DEVANT le robot, lancer le script, regarder quel secteur voit 0,4 m.
 
-Usage sur le robot :  python3 mesure_lidar.py
+Usage sur le robot :  python3 mesure_lidar.py [topic]   (défaut /scan, ex. /scan_raw)
 """
 import math
+import sys
 
 import rclpy
 from rclpy.node import Node
@@ -25,7 +26,9 @@ class MesureLidar(Node):
     def __init__(self):
         super().__init__('mesure_lidar')
         self.scans = []
-        self.create_subscription(LaserScan, '/scan', self._cb, qos_profile_sensor_data)
+        topic = sys.argv[1] if len(sys.argv) > 1 else '/scan'
+        print(f'Topic           : {topic}')
+        self.create_subscription(LaserScan, topic, self._cb, qos_profile_sensor_data)
 
     def _cb(self, msg):
         if len(self.scans) < N_SCANS:
