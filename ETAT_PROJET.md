@@ -1,6 +1,6 @@
 # État du projet
 
-Dernière mise à jour : 09/11/2026 21:05 — étape 0 : E0 à E5 validés + voix réparée. **Reste E6 (redémarrage complet), puis fusion de la PR #4.**
+Dernière mise à jour : 10/11/2026 — **étape 0 terminée et fusionnée** (E0 à E6 validés). Prochaine : étape 1.
 
 ## Essais étape 0 du 09/11
 
@@ -13,7 +13,7 @@ Dernière mise à jour : 09/11/2026 21:05 — étape 0 : E0 à E5 validés + voi
 | E4 rotation | **la boucle odométrie (PR #3) oscillait** (robot tournait ~2,4x trop, l'odom semble en retard, pas fausse d'échelle : 8,9° mesurés pour 9,7°). Retour à la rotation chronométrée du 30/10 → centrage en 1 rotation, cube attrapé |
 | E5 déclencheurs | OK : seul « attrape le cube rouge » lance le pick ; « trouve la balle rouge », « regarde le cube », « attrape tous les cubes » non. Tester avec `ros2 topic pub --once -w 3` (sans `-w`, des abonnés ratent le message) |
 | Voix | muette : le TTS lancé au boot n'avait pas `XDG_RUNTIME_DIR`. Watchdog corrigé (`maj_tts_son.sh`), **voix OK** |
-| E6 redémarrage | **à faire** : vérifier 1 watchdog, 1 pick, 1 mission, voix présente après boot |
+| E6 redémarrage | OK (10/11) : 1 watchdog, 1 superviseur caméra, 1 pick v6, 1 mission, aucun ancien nœud, fichiers = GitHub, capteurs OK, 0 erreur USB, voix OK au boot (XDG présent sur les 3 processus TTS) |
 
 Observé en passant : la mission « attrape tous les cubes » annonce « 1 cube attrapé » sans rien vérifier (défaut F3, étape 3).
 
@@ -32,7 +32,7 @@ Observé en passant : la mission « attrape tous les cubes » annonce « 1 cube 
 
 | Étape | Contenu | État |
 |---|---|---|
-| 0 | Remise en ordre : PR #3 (arrêt pick v6), ménage, lanceurs, doc | **préparée** sur la branche `etape-0-menage`, essais : [`docs/ESSAIS_ETAPE_0.md`](docs/ESSAIS_ETAPE_0.md) |
+| 0 | Remise en ordre : PR #3 (arrêt pick v6), ménage, lanceurs, doc, voix | **terminée** (PR #4 fusionnée le 10/11), essais : [`docs/ESSAIS_ETAPE_0.md`](docs/ESSAIS_ETAPE_0.md) |
 | 1 | Sécurité commune : arrêt global, priorité des commandes, anti-collision lidar | à faire |
 | 2 | Routeur d'ordres unique (grammaire fixe + LLM), mêmes ordres voix robot / voix PC / page | à faire |
 | 3 | Compétences fiables : déplacements mesurés, pick, dépose bac, recherche avec profondeur | à faire |
