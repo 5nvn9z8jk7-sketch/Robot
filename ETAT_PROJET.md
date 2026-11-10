@@ -1,6 +1,21 @@
 # État du projet
 
-Dernière mise à jour : 10/11/2026 — **étape 0 terminée et fusionnée** (E0 à E6 validés). Prochaine : étape 1.
+Dernière mise à jour : 10/11/2026 04:45 — étape 0 terminée. **Étape 1 installée sur le robot, essais F1 à F5 validés ; reste F6 (pick), F7 (refus pendant l'arrêt), F8 (redémarrage)**, puis fusion de la PR #5. Pause recharge batterie.
+
+## Essais étape 1 du 10/11
+
+| Essai | Résultat |
+|---|---|
+| F1 installation | OK : gardien seul de nos nœuds sur `/controller/cmd_vel` |
+| F2 déplacements manuels | OK |
+| F3 arrêt général verrouillé | OK (1er essai raté : page pas encore reconnectée après Ctrl+F5) |
+| F4 obstacle devant | OK : arrêt à 22 cm de l'avant du robot (0,34 m du lidar). Corrigé : le robot « rampait » vers le seuil sans annoncer → arrêt franc sous 15 % de vitesse |
+| F4 annonce | délai ~5 s (le module vocal recharge le modèle à chaque phrase) → `voix_rapide.py` : 3 phrases fixes pré-enregistrées dans `~/speech_patch/sons/`, annonce immédiate |
+| F5 obstacle côté (crabe) | OK |
+| F6 pick avec gardien | à faire |
+| F7 refus pendant l'arrêt | à faire |
+| F8 redémarrage | à faire (vérifiera aussi que le watchdog lance le gardien au boot) |
+
 
 ## Essais étape 0 du 09/11
 
@@ -33,7 +48,7 @@ Observé en passant : la mission « attrape tous les cubes » annonce « 1 cube 
 | Étape | Contenu | État |
 |---|---|---|
 | 0 | Remise en ordre : PR #3 (arrêt pick v6), ménage, lanceurs, doc, voix | **terminée** (PR #4 fusionnée le 10/11), essais : [`docs/ESSAIS_ETAPE_0.md`](docs/ESSAIS_ETAPE_0.md) |
-| 1 | Sécurité commune : arrêt global, priorité des commandes, anti-collision lidar | à faire |
+| 1 | Sécurité commune : arrêt global, priorité des commandes, anti-collision lidar | **installée**, F1–F5 OK, reste F6–F8 (branche `etape-1-securite`, PR #5), essais : [`docs/ESSAIS_ETAPE_1.md`](docs/ESSAIS_ETAPE_1.md) |
 | 2 | Routeur d'ordres unique (grammaire fixe + LLM), mêmes ordres voix robot / voix PC / page | à faire |
 | 3 | Compétences fiables : déplacements mesurés, pick, dépose bac, recherche avec profondeur | à faire |
 | 4 | Navigation avec carte (SLAM + Nav2), lieux nommés, retour base | à faire (prérequis : IMU) |
@@ -50,7 +65,15 @@ Observé en passant : la mission « attrape tous les cubes » annonce « 1 cube 
 - Nouveaux outils : `verif_etat_robot.sh` (relevé lecture seule), `maj_etape0.sh` (installation avec sauvegarde et retour arrière de 3 fichiers : pick v6, watchdog, mission).
 - `.gitattributes` : fins de ligne LF forcées pour les scripts (le clone Windows les convertissait).
 
+## Lidar (mesuré le 10/11)
+
+- `/scan_raw` : 360°, 400 points. Angle 180° du lidar = **avant** du robot ; sens trigonométrique (gauche robot = −90° lidar).
+- Montants du robot vus à 0,10 m vers ±45° du lidar (arrière-côtés) → filtre Hiwonder `lidar_filters_config_sclidar.yaml` : garde 1,25 → 5,08 rad (72° → 291°) dans `/scan`.
+- Vu du robot : `/scan` couvre ≈ −108° → +111° (avant + côtés). **Arrière (~140°) aveugle**, même dans `/scan_raw` (boîte posée derrière non vue).
+
 ## Points ouverts connus
+
+- `autonomous_mission_node._drive` : « distance négative = avance » publie `linear.x < 0`, donc **recule** (convention réelle : x > 0 = avance). À corriger à l'étape 3 ; en attendant le gardien limite le recul à 0,10 m/s et 5 s.
 
 - IMU : correcteur compilé dans `~/imu_calib_ws`, non intégré au démarrage ; accélération au repos ≈ 9,38 m/s² (attendu ≈ 9,81).
 - Dépose du cube dans le bac blanc (23 cm) : séquence non écrite ni testée.

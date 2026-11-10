@@ -134,6 +134,7 @@
   <span class="badge disconnected" id="statusRobot">Robot: déconnecté</span>
   <span class="badge disconnected" id="statusLLM">LLM: déconnecté</span>
   <span class="badge disconnected" id="statusMotors">Moteurs: inconnu</span>
+  <span class="badge disconnected" id="statusSecu">Sécurité: inconnue</span>
   <span class="badge" id="statusKey" style="background:#21262d;color:#8b949e;min-width:80px;">Touche: --</span>
 </div>
 
@@ -189,6 +190,10 @@
 
   <button class="key stop" onclick="sendCmd(0)">
     <span class="num">0</span><span class="icon">🛑</span><span class="label">ARRÊT D'URGENCE</span>
+  </button>
+
+  <button class="key" onclick="sendReprise()" style="background:#0d2d16;border-color:#2ea043;">
+    <span class="num">⏎</span><span class="icon">✅</span><span class="label">REPRENDRE (Entrée)</span>
   </button>
 
   <!-- Mission autonome -->
@@ -380,6 +385,10 @@ function connectRobot() {
     badge.textContent = 'Robot: connecté';
     badge.className = 'badge connected';
     log('Connecté au robot (rosbridge)', 'ok');
+    // Étape 1 : nos commandes passent par le gardien de sécurité du robot
+    ws.send(JSON.stringify({ op: 'advertise', topic: '/robot/cmd_vel/manuel', type: 'geometry_msgs/Twist' }));
+    ws.send(JSON.stringify({ op: 'advertise', topic: '/robot/estop', type: 'std_msgs/Bool' }));
+    subscribe('/robot/securite/etat');
     subscribe('/tts_node/tts_text');
     subscribe('/agent_process/result');
     setTimeout(checkMotors, 1000);
@@ -393,6 +402,9 @@ function connectRobot() {
         if (msg.topic === '/tts_node/tts_text') {
           document.getElementById('ttsBox').textContent = '🗣️ ' + msg.msg.data;
           log('TTS: "' + msg.msg.data + '"', 'ok');
+        }
+        if (msg.topic === '/robot/securite/etat') {
+          majSecurite(msg.msg.data);
         }
         if (msg.topic === '/agent_process/result') {
           log('LLM: ' + msg.msg.data.substring(0, 100), 'cmd');
@@ -432,7 +444,7 @@ function publishCmdVel(linear, angular, lateral) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   ws.send(JSON.stringify({
     op: 'publish',
-    topic: '/controller/cmd_vel',
+    topic: '/robot/cmd_vel/manuel',   // passe par le gardien de sécurité
     msg: { linear: { x: linear, y: lateral || 0, z: 0 }, angular: { x: 0, y: 0, z: angular } }
   }));
 }
@@ -470,8 +482,10 @@ function sendCmd(num) {
     publishCmdVel(0, 0, 0);
     // Interrompt aussi une séquence pick-and-place en cours (pick_and_place_node_v6
     // écoute « stop » sur /vocal_detect/asr_result et arrête bras + roues).
+    // Arrêt général verrouillé (gardien) + « stop » pour le pick et la mission
+    ws.send(JSON.stringify({ op: 'publish', topic: '/robot/estop', msg: { data: true } }));
     ws.send(JSON.stringify({ op: 'publish', topic: '/vocal_detect/asr_result', msg: { data: 'stop' } }));
-    log('[' + num + '] Arrêt immédiat (roues + séquence pick)', 'ok');
+    log('[' + num + '] ARRÊT GÉNÉRAL — appuie sur Entrée pour reprendre', 'ok');
     return;
   }
   const linear = typeof cmd.linear === 'function' ? cmd.linear() : cmd.linear;
@@ -517,8 +531,16 @@ function sendScan() {
   if (!ws || ws.readyState !== WebSocket.OPEN) { log('Robot non connecte', 'err'); return; }
   const rotSpeed = 1.5;
   const duration = 3200;
-  publishCmdVel(0, rotSpeed);
-  setTimeout(function() { publishCmdVel(0, 0, 0); log('[C] Scan 360 termine', 'ok'); }, duration);
+  // Répété toutes les 100 ms : le gardien considère une commande de plus de 0,3 s comme arrêtée
+  if (cmdVelTimer) { clearInterval(cmdVelTimer); cmdVelTimer = null; }
+  const debut = Date.now();
+  publishCmdVel(0, rotSpeed, 0);
+  cmdVelTimer = setInterval(function() {
+    if (Date.now() - debut >= duration) {
+      clearInterval(cmdVelTimer); cmdVelTimer = null;
+      publishCmdVel(0, 0, 0); log('[C] Scan termine', 'ok');
+    } else { publishCmdVel(0, rotSpeed, 0); }
+  }, 100);
 }
 
 // === GRIPPER TOGGLE (Ouvre/Ferme la pince) ===
@@ -571,6 +593,9 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'q' || e.key === 'Q') { e.preventDefault(); sendCmd(4); return; }
   if (e.key === 's' || e.key === 'S') { e.preventDefault(); sendCmd(2); return; }
   if (e.key === 'd' || e.key === 'D') { e.preventDefault(); sendCmd(6); return; }
+
+  // Entrée = lever l'arrêt général
+  if (e.key === 'Enter') { e.preventDefault(); sendReprise(); return; }
 
   // ESPACE = stop immédiat
   if (e.key === ' ' || e.key === 'Spacebar') { e.preventDefault(); sendCmd(0); return; }
@@ -637,6 +662,24 @@ function updatePickDist() {
     }));
     log('Distance cible (depth): ' + val.toFixed(2) + ' m', 'cmd');
   }
+}
+
+// === SÉCURITÉ (étape 1) ===
+function sendReprise() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) { log('Robot non connecté', 'err'); return; }
+  ws.send(JSON.stringify({ op: 'publish', topic: '/robot/estop', msg: { data: false } }));
+  log('[⏎] Reprise demandée', 'ok');
+}
+
+function majSecurite(json) {
+  var b = document.getElementById('statusSecu');
+  try {
+    var e = JSON.parse(json);
+    if (e.verrou) { b.textContent = 'Sécurité: ARRÊT (Entrée = reprendre)'; b.className = 'badge disconnected'; }
+    else if (!e.lidar_ok) { b.textContent = 'Sécurité: lidar muet'; b.className = 'badge disconnected'; }
+    else if (e.motif) { b.textContent = 'Sécurité: ' + e.motif; b.className = 'badge sending'; }
+    else { b.textContent = 'Sécurité: OK'; b.className = 'badge connected'; }
+  } catch (err) {}
 }
 
 // === MISSION AUTONOME ===

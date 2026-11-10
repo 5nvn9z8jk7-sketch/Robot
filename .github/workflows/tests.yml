@@ -30,6 +30,9 @@ jobs:
       - name: Tests unitaires et d'intégration
         run: python3 -m pytest ros2_ws/src/toy_sorter/tests -q
 
+      - name: Tests du gardien de sécurité (logique, sans robot)
+        run: python3 -m pytest speech_patch/tests -q
+
       - name: Simulation virtuelle bout-en-bout (5 jouets)
         run: python3 sim/run_virtual_demo.py --toys 5 --seed 42 --quiet
 

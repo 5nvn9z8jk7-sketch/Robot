@@ -41,6 +41,11 @@ NODES_CONFIG = [
     ("ros_robot_controller",
      "/home/ubuntu/ros2_ws/install/ros_robot_controller/lib/ros_robot_controller/ros_robot_controller --ros-args -r __ns:=/ --params-file /home/ubuntu/speech_patch/params_ros_robot_controller.yaml",
      "/ros_robot_controller/imu_raw", 1, 3),
+    # Étape 1 : seul passage vers les roues pour nos nœuds. S'il tombe, nos nœuds
+    # ne peuvent plus bouger le robot (panne « sûre »), mais il faut le relancer vite.
+    ("gardien_securite",
+     "python3 -u /home/ubuntu/speech_patch/gardien_securite.py",
+     None, 1, 2),
     ("rosbridge_websocket",
      "ros2 launch rosbridge_server rosbridge_websocket_launch.xml",
      None, 1, 5),  # Pas de topic spécifique, on teste le port

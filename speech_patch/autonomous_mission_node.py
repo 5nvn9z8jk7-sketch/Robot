@@ -36,7 +36,8 @@ import json
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from std_msgs.msg import String, UInt16
+from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
+from std_msgs.msg import String, UInt16, Bool
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import LaserScan
 
@@ -104,6 +105,7 @@ class AutonomousMissionNode(Node):
         self._state = STATE_IDLE
         self._mission_thread = None
         self._abort = False
+        self._verrou = False   # arrêt général du gardien
 
         # Données capteurs
         self._battery_level = 100  # % (estimation si pas de topic)
@@ -123,7 +125,8 @@ class AutonomousMissionNode(Node):
         self._mission_start_time = 0
 
         # Publishers
-        self.cmd_vel_pub = self.create_publisher(Twist, '/controller/cmd_vel', 1)
+        # Étape 1 : les roues passent par gardien_securite.py (obstacles, arrêt général)
+        self.cmd_vel_pub = self.create_publisher(Twist, '/robot/cmd_vel/auto', 1)
         self.tts_pub = self.create_publisher(String, '/tts_node/tts_text', 1)
 
         # Bras
@@ -141,6 +144,10 @@ class AutonomousMissionNode(Node):
             UInt16, '/ros_robot_controller/battery', self._battery_callback, 1)
         self.create_subscription(
             LaserScan, '/scan', self._scan_callback, 1)
+        self.create_subscription(
+            Bool, '/robot/estop_etat', self._estop_callback,
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                            reliability=ReliabilityPolicy.RELIABLE))
 
         # Timer pour vérification batterie
         self.create_timer(5.0, self._battery_check_timer)
@@ -163,11 +170,17 @@ class AutonomousMissionNode(Node):
 
         # Gérer les commandes immédiates (même en mission)
         if command == 'stop':
+            en_cours = self._state not in (STATE_IDLE, STATE_LOW_BATTERY)
             self._abort_mission()
-            self._say("Mission annulée.")
+            if en_cours:   # sinon le gardien annonce déjà « Arrêt général »
+                self._say("Mission annulée.")
             return
         if command == 'status':
             self._announce_status()
+            return
+
+        if self._verrou:
+            self._say("Arrêt général actif. Dis reprends d'abord.")
             return
 
         # Si une mission est en cours, ignorer les nouvelles commandes
@@ -178,6 +191,13 @@ class AutonomousMissionNode(Node):
 
         # Démarrer la mission
         self._start_mission(command, text)
+
+    def _estop_callback(self, msg):
+        """Arrêt général du gardien : annule la mission en cours."""
+        self._verrou = bool(msg.data)
+        if msg.data and self._state not in (STATE_IDLE, STATE_LOW_BATTERY):
+            self.get_logger().warn('🛑 Arrêt général (gardien) - mission annulée')
+            threading.Thread(target=self._abort_mission, daemon=True).start()
 
     def _color_callback(self, msg):
         with self._lock:
