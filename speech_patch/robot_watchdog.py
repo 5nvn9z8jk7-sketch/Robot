@@ -47,6 +47,12 @@ NODES_CONFIG = [
     ("gardien_securite",
      "python3 -u /home/ubuntu/speech_patch/gardien_securite.py",
      None, 1, 2),
+    # Filtre lidar Hiwonder (/scan_raw -> /scan). Vu figé le 11/11 (32 % CPU, plus
+    # rien sur /scan) : le gardien bloquait alors tous les déplacements. Lancé au
+    # boot par lidar.launch.py ; ici on le relance seulement s'il disparaît ou se tait.
+    ("scan_to_scan_filter_chain",
+     "/opt/ros/humble/lib/laser_filters/scan_to_scan_filter_chain --ros-args --params-file /home/ubuntu/ros2_ws/install/peripherals/share/peripherals/config/lidar_filters_config_sclidar.yaml -r scan:=scan_raw -r scan_filtered:=scan",
+     "/scan", 1, 3),
     # Étape 2 : seule porte d'entrée des phrases (voix robot, micro PC, page).
     # S'il tombe, plus aucun ordre n'est compris (panne « sûre »).
     ("routeur_ordres",
