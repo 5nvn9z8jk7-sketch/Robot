@@ -351,7 +351,8 @@ def main():
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():          # déjà arrêté si le programme a reçu un signal (pkill)
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
