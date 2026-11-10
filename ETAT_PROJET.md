@@ -1,6 +1,6 @@
 # État du projet
 
-Dernière mise à jour : 10/11/2026 — étape 0 terminée. **Étape 1 fusionnée dans main (PR #5), essais F1 à F7 validés ; reste F8 (relevé après redémarrage)**.
+Dernière mise à jour : 10/11/2026 — étape 0 terminée. **Étape 1 terminée** : fusionnée dans main (PR #5), essais F1 à F8 validés. Prochaine : étape 2 (routeur d'ordres unique).
 
 ## Essais étape 1 du 10/11
 
@@ -14,7 +14,7 @@ Dernière mise à jour : 10/11/2026 — étape 0 terminée. **Étape 1 fusionné
 | F5 obstacle côté (crabe) | OK |
 | F6 pick avec gardien | OK |
 | F7 refus pendant l'arrêt | OK |
-| F8 redémarrage | à faire (vérifiera aussi que le watchdog lance le gardien au boot) |
+| F8 redémarrage | OK (11/11 03:49 CST, uptime 24 min : gardien lancé par le watchdog, seul de nos nœuds sur /controller/cmd_vel, capteurs aux fréquences habituelles, caméra 0 erreur) |
 
 
 ## Essais étape 0 du 09/11
@@ -48,7 +48,7 @@ Observé en passant : la mission « attrape tous les cubes » annonce « 1 cube 
 | Étape | Contenu | État |
 |---|---|---|
 | 0 | Remise en ordre : PR #3 (arrêt pick v6), ménage, lanceurs, doc, voix | **terminée** (PR #4 fusionnée le 10/11), essais : [`docs/ESSAIS_ETAPE_0.md`](docs/ESSAIS_ETAPE_0.md) |
-| 1 | Sécurité commune : arrêt global, priorité des commandes, anti-collision lidar | **fusionnée** (PR #5), F1–F7 OK, reste F8, essais : [`docs/ESSAIS_ETAPE_1.md`](docs/ESSAIS_ETAPE_1.md) |
+| 1 | Sécurité commune : arrêt global, priorité des commandes, anti-collision lidar | **terminée** (PR #5), F1–F8 OK, essais : [`docs/ESSAIS_ETAPE_1.md`](docs/ESSAIS_ETAPE_1.md) |
 | 2 | Routeur d'ordres unique (grammaire fixe + LLM), mêmes ordres voix robot / voix PC / page | à faire |
 | 3 | Compétences fiables : déplacements mesurés, pick, dépose bac, recherche avec profondeur | à faire |
 | 4 | Navigation avec carte (SLAM + Nav2), lieux nommés, retour base | à faire (prérequis : IMU) |
