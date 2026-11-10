@@ -11,3 +11,6 @@ speech_patch_deploy.zip
 # Fichiers de sauvegarde / journaux
 *.bak
 *.log
+
+# Fichiers personnels rangés sur le PC (notes, archives, raccourcis) : jamais sur GitHub
+_perso/
