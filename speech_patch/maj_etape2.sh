@@ -10,7 +10,7 @@ set -euo pipefail
 D=/home/ubuntu/speech_patch
 URL=https://raw.githubusercontent.com/5nvn9z8jk7-sketch/Robot/etape-2-routeur/speech_patch
 TS=$(date +%Y%m%d_%H%M%S)
-FICHIERS="routeur_logique.py routeur_ordres.py llm_move_bridge_node.py pick_and_place_node_v6.py autonomous_mission_node.py robot_watchdog.py"
+FICHIERS="voix_rapide.py routeur_logique.py routeur_ordres.py llm_move_bridge_node.py pick_and_place_node_v6.py autonomous_mission_node.py robot_watchdog.py"
 NOEUDS="'[r]outeur_ordres.py' '[l]lm_move_bridge_node.py' '[p]ick_and_place_node_v6.py' '[a]utonomous_mission_node.py'"
 ROS='source /opt/ros/humble/setup.bash; source /home/ubuntu/ros2_ws/install/setup.bash'
 

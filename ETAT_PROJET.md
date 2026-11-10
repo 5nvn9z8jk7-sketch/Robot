@@ -1,6 +1,17 @@
 # État du projet
 
-Dernière mise à jour : 10/11/2026 — étape 0 terminée. **Étape 1 terminée** (PR #5, F1–F8 OK). **Étape 2 écrite** (routeur d'ordres, branche `etape-2-routeur`) : 117 tests hors robot OK, essais G1–G11 sur le robot à faire.
+Dernière mise à jour : 10/11/2026 — étape 0 terminée. **Étape 1 terminée** (PR #5, F1–F8 OK). **Étape 2 installée** (routeur d'ordres, branche `etape-2-routeur`, PR #6) : 117 tests hors robot OK, G1 OK ; reste G2–G11. Pause recharge batterie (11/11 ~04:30 CST).
+
+## Essais étape 2 du 11/11
+
+| Essai | Résultat |
+|---|---|
+| G1 installation | OK : 4 programmes à 1 processus, Ollama joignable depuis le robot, `/robot/ordre` reçu par déplacements + pick + mission |
+| Voix rapide | 3/12 phrases préparées : la synthèse a planté (ScatterND) et bloquait les suivantes → `voix_rapide.py` réessaie chaque phrase et continue ; installé, 9/9 OK |
+| Incident lidar | badge « lidar muet » : `scan_to_scan_filter_chain` (Hiwonder) figé (32 % CPU, plus rien sur `/scan`, absent de `ros2 node list`) ; `/scan_raw` OK. Relancé à la main → 9,9 Hz. Ajouté au watchdog (relance si absent ou `/scan` muet) — **watchdog pas encore réinstallé** |
+| G2–G11 | à faire |
+
+À la reprise : relancer `maj_etape2.sh` (installe le watchdog qui surveille le filtre lidar + correction d'arrêt du routeur), puis G2.
 
 ## Étape 2 — ce qui change
 
