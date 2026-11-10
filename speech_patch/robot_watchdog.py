@@ -14,7 +14,8 @@ Nœuds surveillés:
   - ws_audio_asr          (ASR vocal)
   - tts_node              (TTS vocal)
   - agent_process         (LLM)
-  - llm_move_bridge       (pont mouvement Ollama)
+  - routeur_ordres        (compréhension des phrases, étape 2)
+  - llm_move_bridge       (exécuteur des déplacements)
   - autonomous_mission_node (missions autonomes)
   - simple_color_detect   (détection couleur)
   - servo_manager         (bras robotique — nœud réel, ex-servo_controller)
@@ -46,6 +47,11 @@ NODES_CONFIG = [
     ("gardien_securite",
      "python3 -u /home/ubuntu/speech_patch/gardien_securite.py",
      None, 1, 2),
+    # Étape 2 : seule porte d'entrée des phrases (voix robot, micro PC, page).
+    # S'il tombe, plus aucun ordre n'est compris (panne « sûre »).
+    ("routeur_ordres",
+     "python3 -u /home/ubuntu/speech_patch/routeur_ordres.py",
+     None, 1, 3),
     ("rosbridge_websocket",
      "ros2 launch rosbridge_server rosbridge_websocket_launch.xml",
      None, 1, 5),  # Pas de topic spécifique, on teste le port

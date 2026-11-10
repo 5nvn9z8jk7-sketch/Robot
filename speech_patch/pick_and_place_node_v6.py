@@ -14,10 +14,12 @@ Séquence:
   3. Préhension: descend le bras aux positions servos apprises, ferme la
      pince à gripper_close, remonte le bras.
 
-Déclencheurs: /vocal_detect/asr_result (voix ou touche P du keypad web).
+Déclencheur (étape 2) : /robot/ordre {"action": "attrape"} envoyé par routeur_ordres.py
+(voix, micro du PC, zone de texte ou touche P de la page). Fin : /robot/ordre/fin.
 Calibration: /home/ubuntu/speech_patch/pick_calib.json (rechargé à chaque run).
 """
 
+import json
 import math
 import sys
 import threading
@@ -89,8 +91,14 @@ class PickAndPlaceV6(Node):
         self.tts_pub = self.create_publisher(String, '/tts_node/tts_text', 1)
         self.servo_pub = self.create_publisher(ServosPosition, 'servo_controller', 1)
 
+        # Étape 2 : le déclenchement vient du routeur (/robot/ordre) ; les phrases
+        # restent écoutées uniquement pour l'arrêt (« stop »), en secours du gardien.
         self.create_subscription(
             String, '/vocal_detect/asr_result', self._asr_cb, 1)
+        self.create_subscription(String, '/robot/ordre', self._ordre_cb, 10)
+        self.pub_fin = self.create_publisher(String, '/robot/ordre/fin', 10)
+        self._ordre_id = None
+        self._resultat = ('echec', '')
         self.create_subscription(
             ColorsInfo, '/color_detect_node/color_info', self._color_cb, 1)
         self.create_subscription(
@@ -129,18 +137,40 @@ class PickAndPlaceV6(Node):
             if running:
                 self.get_logger().warn('🛑 ARRET D\'URGENCE demandé - séquence interrompue')
             return
-        if not self._is_trigger(text):
+        # (plus de déclenchement direct ici : voir _ordre_cb)
+
+    def _ordre_cb(self, msg):
+        """Ordre du routeur : {"id": "r3", "action": "attrape", "couleur": "rouge"}."""
+        try:
+            o = json.loads(msg.data)
+        except ValueError:
+            return
+        if o.get('action') != 'attrape':
             return
         if self._verrou:
             self._say("Arrêt général actif. Dis reprends d'abord.")
+            self._publier_fin(o.get('id'), 'refus', 'arrêt général actif')
             return
         with self._lock:
             if self._busy:
                 self.get_logger().info('Deja en cours, ignore')
-                return
-            self._busy = True
-            self._abort = False
+                occupe = True
+            else:
+                occupe = False
+                self._busy = True
+                self._abort = False
+                self._ordre_id = o.get('id')
+                self._resultat = ('echec', '')
+        if occupe:
+            self._publier_fin(o.get('id'), 'refus', 'saisie déjà en cours')
+            return
         threading.Thread(target=self._run_sequence, daemon=True).start()
+
+    def _publier_fin(self, oid, resultat, detail=''):
+        if oid is None:
+            return
+        self.pub_fin.publish(String(data=json.dumps(
+            {'id': oid, 'resultat': resultat, 'detail': detail}, ensure_ascii=False)))
 
     def _estop_cb(self, msg):
         """Arrêt général du gardien (ESPACE, bouton, « stop ») : interrompt la séquence."""
@@ -401,6 +431,7 @@ class PickAndPlaceV6(Node):
             cube = self._get_red_cube(timeout=DETECT_TIMEOUT)
             if cube is None:
                 self._say("Je ne vois pas de cube rouge. Place-le devant moi.")
+                self._resultat = ('echec', 'pas de cube rouge en vue')
                 return
             self.get_logger().info(
                 f'Cube: ({cube.x},{cube.y}) {cube.width}x{cube.height}px')
@@ -411,6 +442,7 @@ class PickAndPlaceV6(Node):
                     self._say("Arrêt.")
                 else:
                     self._say("Je n'ai pas reussi a me placer.")
+                    self._resultat = ('echec', 'placement impossible')
                 return
 
             # Avance a l'aveugle: reference -> point de grip (le point de grip
@@ -430,6 +462,7 @@ class PickAndPlaceV6(Node):
                 return
             self._say("Voilà, c'est fait !")
             self.get_logger().info('✅ Séquence terminée')
+            self._resultat = ('ok', '')
         except Exception as e:
             self.get_logger().error(f'Erreur: {e}')
             import traceback
@@ -438,8 +471,14 @@ class PickAndPlaceV6(Node):
         finally:
             self._stop()
             with self._lock:
+                annule = self._abort
+                oid, self._ordre_id = self._ordre_id, None
+                res, detail = self._resultat
                 self._busy = False
                 self._abort = False
+            if annule and res != 'ok':
+                res, detail = 'annule', 'arrêt'
+            self._publier_fin(oid, res, detail)
 
 
 def main(args=None):

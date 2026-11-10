@@ -1,6 +1,15 @@
 # État du projet
 
-Dernière mise à jour : 10/11/2026 — étape 0 terminée. **Étape 1 terminée** : fusionnée dans main (PR #5), essais F1 à F8 validés. Prochaine : étape 2 (routeur d'ordres unique).
+Dernière mise à jour : 10/11/2026 — étape 0 terminée. **Étape 1 terminée** (PR #5, F1–F8 OK). **Étape 2 écrite** (routeur d'ordres, branche `etape-2-routeur`) : 117 tests hors robot OK, essais G1–G11 sur le robot à faire.
+
+## Étape 2 — ce qui change
+
+- `routeur_ordres.py` + `routeur_logique.py` : seul programme qui comprend les phrases (`/vocal_detect/asr_result`). Grammaire fixe, sinon IA locale (Ollama, JSON contrôlé, « Je lance ? » avant de bouger). Envoie un ordre à la fois sur `/robot/ordre`, attend `/robot/ordre/fin`.
+- `llm_move_bridge_node.py` v4 : exécute avance / recule / crabe (odométrie) et tourne (chrono) ; échec « obstacle » si le gardien bloque plus de 1,5 s.
+- Pick v6 et mission : déclenchés par `/robot/ordre` (plus de mots-clés propres) ; le pick garde « stop » en secours.
+- Page : zone de texte, bouton « Micro PC » (reconnaissance du navigateur), ligne Entendu / Compris / État.
+- Limites : avance 3 m, recul 0,4 m, crabe 1 m, rotation 360°.
+- Le retour à la base (touche B) répond « pas encore disponible » : l'ancien code roulait dans le mauvais sens (`_drive`).
 
 ## Essais étape 1 du 10/11
 
@@ -49,7 +58,7 @@ Observé en passant : la mission « attrape tous les cubes » annonce « 1 cube 
 |---|---|---|
 | 0 | Remise en ordre : PR #3 (arrêt pick v6), ménage, lanceurs, doc, voix | **terminée** (PR #4 fusionnée le 10/11), essais : [`docs/ESSAIS_ETAPE_0.md`](docs/ESSAIS_ETAPE_0.md) |
 | 1 | Sécurité commune : arrêt global, priorité des commandes, anti-collision lidar | **terminée** (PR #5), F1–F8 OK, essais : [`docs/ESSAIS_ETAPE_1.md`](docs/ESSAIS_ETAPE_1.md) |
-| 2 | Routeur d'ordres unique (grammaire fixe + LLM), mêmes ordres voix robot / voix PC / page | à faire |
+| 2 | Routeur d'ordres unique (grammaire fixe + LLM), mêmes ordres voix robot / voix PC / page | **écrite**, essais à faire : [`docs/ESSAIS_ETAPE_2.md`](docs/ESSAIS_ETAPE_2.md) ; micro du robot en 2b |
 | 3 | Compétences fiables : déplacements mesurés, pick, dépose bac, recherche avec profondeur | à faire |
 | 4 | Navigation avec carte (SLAM + Nav2), lieux nommés, retour base | à faire (prérequis : IMU) |
 | 5 | Page Web unique servie par le robot, un seul chemin micro PC | à faire |
