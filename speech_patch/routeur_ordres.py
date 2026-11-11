@@ -43,6 +43,7 @@ OLLAMA_URL = 'http://192.168.1.20:11434'
 OLLAMA_MODELE = 'qwen3.5:9b'
 IA_DELAI_S = 40.0          # le 1er appel charge le modèle (plus long)
 CONFIRMATION_S = 20.0      # délai pour répondre « oui »
+ACCUSE_S = 3.0           # l'exécuteur doit accuser réception en moins de 3 s
 DOUBLON_S = 1.5            # même phrase reçue deux fois (deux micros) : ignorée
 
 # Durée maximale d'attente de la fin de chaque ordre (au-delà : échec)
@@ -270,7 +271,7 @@ class RouteurOrdres(Node):
                 if res.get('resultat') != 'ok':
                     # Le pick et la mission annoncent eux-mêmes leurs échecs
                     if res.get('resultat') != 'annule' and not self._annuler \
-                            and o['action'] in ANNONCE:
+                            and (o['action'] in ANNONCE or 'ne répond pas' in res.get('detail', '')):
                         detail = res.get('detail', '')
                         self._dire(f"Je n'ai pas pu terminer : {detail}." if detail
                                    else "Je n'ai pas pu terminer.")
@@ -289,16 +290,24 @@ class RouteurOrdres(Node):
         with self._lock:
             self._fin.pop(oid, None)
         self.pub_ordre.publish(String(data=json.dumps(ordre, ensure_ascii=False)))
-        limite = time.monotonic() + delai_max(o)
+        debut = time.monotonic()
+        limite = debut + delai_max(o)
+        recu = False
         while time.monotonic() < limite:
             self._fin_evt.wait(0.2)
             self._fin_evt.clear()
             with self._lock:
                 f = self._fin.pop(oid, None)
+            if f and f.get('resultat') == 'recu':
+                recu = True          # l'exécuteur a pris l'ordre ; on attend la vraie fin
+                f = None
             if f:
                 return f
             if self._annuler:
                 return {'resultat': 'annule'}
+            # Exécuteur absent (relance en cours…) : on ne reste pas bloqué 2 min
+            if not recu and time.monotonic() - debut > ACCUSE_S:
+                return {'resultat': 'echec', 'detail': f"le programme chargé de « {rl.decrire(o)} » ne répond pas"}
         return {'resultat': 'echec', 'detail': 'pas de réponse du programme chargé de cet ordre'}
 
     # ── sorties ──

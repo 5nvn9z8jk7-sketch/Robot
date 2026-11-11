@@ -164,6 +164,7 @@ class PickAndPlaceV6(Node):
         if occupe:
             self._publier_fin(o.get('id'), 'refus', 'saisie déjà en cours')
             return
+        self._publier_fin(o.get('id'), 'recu')
         threading.Thread(target=self._run_sequence, daemon=True).start()
 
     def _publier_fin(self, oid, resultat, detail=''):

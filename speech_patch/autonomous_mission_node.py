@@ -180,6 +180,7 @@ class AutonomousMissionNode(Node):
             self._publier_fin(o.get('id'), 'refus', 'mission déjà en cours')
             return
         self._ordre_id = o.get('id')
+        self._publier_fin(o.get('id'), 'recu')
         self._start_mission(commande, o.get('action'))
 
     def _publier_fin(self, oid, resultat, detail=''):

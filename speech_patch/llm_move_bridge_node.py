@@ -83,6 +83,7 @@ class ExecuteurDeplacements(Node):
         if occupe:
             self._fin(o, 'refus', 'déplacement déjà en cours')
             return
+        self._fin(o, 'recu')
         threading.Thread(target=self._executer, args=(o,), daemon=True).start()
 
     def _estop_cb(self, msg):
