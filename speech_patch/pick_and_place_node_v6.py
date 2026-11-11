@@ -427,6 +427,20 @@ class PickAndPlaceV6(Node):
                 }
                 self.get_logger().warn('Calibration absente: valeurs de secours (imprecis)')
 
+            # La caméra est au poignet : ce qu'elle voit dépend de la position du bras.
+            # La référence (taille 60 px…) a été mesurée bras HAUT, pince OUVERTE
+            # (teach_pick_v6.py). On y remet le bras avant de chercher : avant, si le bras
+            # avait été bougé au clavier, le cube sortait de l'image en approche (vu le 12/11).
+            regard = {int(k): v for k, v in calib.get(pick_calib.KEY_ARM_UP,
+                                                       pick_calib.DEFAULT_UP).items()}
+            regard[10] = int(calib.get(pick_calib.KEY_GRIPPER_OPEN, pick_calib.DEFAULT_GRIPPER_OPEN))
+            self.get_logger().info(f'Bras en position de regard : {regard}')
+            self._move_servos(regard, 1.5)
+            if self._abort:
+                self._resultat = ('annule', 'arrêt')
+                return
+            time.sleep(COLOR_SETTLE_S + 0.3)   # images prises pendant le mouvement ignorées
+
             self._say("Je cherche le cube rouge.")
             cube = self._get_red_cube(timeout=DETECT_TIMEOUT)
             if cube is None:
