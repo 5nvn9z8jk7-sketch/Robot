@@ -145,6 +145,10 @@ class PickAndPlaceV6(Node):
             o = json.loads(msg.data)
         except ValueError:
             return
+        if o.get('action') == 'lache':
+            # dans un fil à part : ne pas bloquer les autres messages (arrêt…) 1 s
+            threading.Thread(target=self._lacher, args=(o.get('id'),), daemon=True).start()
+            return
         if o.get('action') != 'attrape':
             return
         if self._verrou:
@@ -166,6 +170,20 @@ class PickAndPlaceV6(Node):
             return
         self._publier_fin(o.get('id'), 'recu')
         threading.Thread(target=self._run_sequence, daemon=True).start()
+
+    def _lacher(self, oid):
+        """« Lâche le cube » : ouvre la pince sur place (le bras ne bouge pas)."""
+        with self._lock:
+            occupe = self._busy
+        if occupe:
+            self._publier_fin(oid, 'refus', 'saisie en cours')
+            return
+        self._publier_fin(oid, 'recu')
+        calib = pick_calib.load_calib() or {}
+        ouvert = int(calib.get(pick_calib.KEY_GRIPPER_OPEN, pick_calib.DEFAULT_GRIPPER_OPEN))
+        self._say("J'ouvre la pince.")
+        self._move_servos({10: ouvert}, 0.8)
+        self._publier_fin(oid, 'ok')
 
     def _publier_fin(self, oid, resultat, detail=''):
         if oid is None:

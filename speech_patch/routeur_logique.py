@@ -38,7 +38,7 @@ VITESSE = {'avance': 0.20, 'recule': 0.10, 'crabe': 0.15}
 COULEURS = ['rouge', 'bleu', 'vert', 'jaune', 'orange', 'violet', 'rose', 'noir', 'blanc']
 COULEURS_OK = ['rouge']
 
-ACTIONS = ('avance', 'recule', 'crabe', 'tourne', 'attrape', 'attrape_tout',
+ACTIONS = ('avance', 'recule', 'crabe', 'tourne', 'attrape', 'lache', 'attrape_tout',
            'patrouille', 'etat')
 
 # ── Normalisation ──
@@ -233,16 +233,21 @@ def _segment(t):
     if re.search(r'\b(patrouille|patrouiller|fais 1 ronde|fais une ronde|ronde)\b', t):
         return {'action': 'patrouille'}
 
+    # Ouvrir la pince (« lâche le cube ») : sur place, sans bouger le bras
+    if re.search(r'\b(lache[sz]?|lacher|relache[sz]?|relacher)\b', t) or \
+            (re.search(r'\bouvre\b', t) and re.search(r'\bpince\b', t)):
+        return {'action': 'lache'}
+
     # Pas encore disponibles (réponse claire au lieu d'un geste au hasard)
-    if re.search(r'\b(depose|deposer|pose le|pose la|lache|mets le|mets la)\b', t):
+    if re.search(r'\b(depose|deposer|pose le|pose la|mets le|mets la)\b', t):
         return Resultat('refus', message="La dépose dans le bac n'est pas encore disponible.")
     if re.search(r'\b(base|maison|recharge toi|va te charger)\b', t) and \
             re.search(r'\b(retourne|rentre|reviens|va|retour)\b', t):
         return Resultat('refus', message="Le retour à la base n'est pas encore disponible : il me faut d'abord une carte.")
     if re.search(r'\bva (?:a|au|aux|dans|vers|jusqu)\b', t) and not re.search(r'\b(gauche|droite)\b', t):
         return Resultat('refus', message="Je ne connais pas encore les lieux : il me faut d'abord une carte.")
-    if re.search(r'\b(ouvre|ferme)\b', t) and re.search(r'\bpince\b', t):
-        return Resultat('refus', message="La pince seule n'est pas encore disponible. Dis : attrape le cube rouge.")
+    if re.search(r'\bferme\b', t) and re.search(r'\bpince\b', t):
+        return Resultat('refus', message="Je ferme la pince seulement pour attraper. Dis : attrape le cube rouge.")
 
     # Déplacements
     cote = _cote(t)
@@ -349,6 +354,8 @@ def valider_plan_ia(obj):
         try:
             if a in ('avance', 'recule'):
                 d = float(e['distance_m'])
+                if d < 0.01:
+                    continue      # étape nulle, ignorée
                 refus = _refus_limite(a, d)
                 if refus:
                     return Resultat('refus', message=refus)
@@ -363,8 +370,8 @@ def valider_plan_ia(obj):
                 plan.append({'action': a, 'cote': e['cote'], 'distance_m': round(d, 3)})
             elif a == 'tourne':
                 ang = float(e['angle_deg'])
-                if ang == 0:
-                    return Resultat('refus', message="Je n'ai pas compris de combien tourner.")
+                if abs(ang) < 1:
+                    continue      # « tourner de 0° » : étape inutile, ignorée
                 refus = _refus_limite(a, abs(ang))
                 if refus:
                     return Resultat('refus', message=refus)
@@ -378,6 +385,9 @@ def valider_plan_ia(obj):
                 plan.append({'action': a})
         except (KeyError, TypeError, ValueError):
             return Resultat('refus', message="Je n'ai pas compris.")
+    if not plan:
+        return Resultat('parole', message=reponse[:300]) if reponse else \
+            Resultat('refus', message="Je n'ai pas compris.")
     return Resultat('plan', plan, message=reponse[:300])
 
 
@@ -404,6 +414,8 @@ def decrire(o):
         return f"tourner à {cote} de {abs(o['angle_deg']):g} degrés"
     if a == 'attrape':
         return f"attraper le cube {o.get('couleur', 'rouge')}"
+    if a == 'lache':
+        return 'ouvrir la pince'
     if a == 'attrape_tout':
         return 'attraper tous les cubes rouges'
     if a == 'patrouille':
@@ -424,7 +436,7 @@ def est_long(plan):
 
 # ── Consigne donnée à l'IA locale (Ollama) ──
 
-CONSIGNE_IA = """Tu es le module de compréhension d'un petit robot à roues (mecanum) avec un bras.
+CONSIGNE_IA = """Tu es le cerveau d'un petit robot à roues (mecanum) avec un bras et une pince.
 Tu reçois une phrase en français et tu réponds UNIQUEMENT en JSON :
 {"plan": [ ... ], "reponse": "phrase courte en français"}
 
@@ -432,16 +444,28 @@ Actions autorisées dans "plan" (aucune autre) :
 - {"action": "avance", "distance_m": nombre}      (0 < distance <= 3)
 - {"action": "recule", "distance_m": nombre}      (0 < distance <= 0.4)
 - {"action": "crabe", "cote": "gauche"|"droite", "distance_m": nombre}  (<= 1)
-- {"action": "tourne", "angle_deg": nombre}       (positif = gauche, négatif = droite, |angle| <= 360)
+- {"action": "tourne", "angle_deg": nombre}       (positif = gauche, négatif = droite, 1 <= |angle| <= 360)
 - {"action": "attrape", "couleur": "rouge"}       (seul le cube rouge est possible)
+- {"action": "lache"}                             (ouvrir la pince, lâcher ce qu'elle tient)
 - {"action": "attrape_tout"}                      (attraper tous les cubes rouges)
 - {"action": "patrouille"}
 - {"action": "etat"}                              (batterie, sécurité)
-5 actions au maximum.
+5 actions au maximum. N'ajoute jamais d'étape inutile (pas de rotation de 0 degré).
 
-Si la phrase est une question ou une conversation, "plan" est vide et "reponse" contient ta réponse (2 phrases maximum).
-Si on demande quelque chose d'impossible avec ces actions, "plan" est vide et "reponse" l'explique.
-N'invente jamais d'autre action. Pas de texte hors du JSON."""
+Ce que le robot sait et ne sait pas :
+- Il voit seulement le cube rouge. Il ne sait PAS où est la personne qui parle, ni où sont les meubles ou les pièces.
+- « un peu » = petite valeur : 20 cm pour avancer, 10 cm pour reculer, 20 degrés pour tourner.
+- « approche-toi », « viens » (vers la personne) : la personne est en général devant le robot → avance de 0.3 m.
+- Pour aller vers un objet ou un lieu qu'il ne connaît pas : plan vide, et explique gentiment pourquoi.
+
+Conversation : si la phrase est une question, une demande de blague, de la culture générale ou du bavardage, "plan" est vide et "reponse" y répond vraiment, avec gentillesse (2 phrases maximum, pas d'émoticônes). Ne dis pas que tu ne peux pas bavarder.
+
+Exemples :
+"approche-toi un peu de moi" -> {"plan": [{"action": "avance", "distance_m": 0.3}], "reponse": "Je m'approche un peu."}
+"fais un petit carré" -> {"plan": [{"action": "avance", "distance_m": 0.3}, {"action": "tourne", "angle_deg": 90}, {"action": "avance", "distance_m": 0.3}, {"action": "tourne", "angle_deg": 90}, {"action": "avance", "distance_m": 0.3}], "reponse": "Je fais un petit carré."}
+"raconte une blague" -> {"plan": [], "reponse": "Pourquoi les robots ne paniquent jamais ? Parce qu'ils ont des nerfs d'acier."}
+"va dans la cuisine" -> {"plan": [], "reponse": "Je ne connais pas encore les pièces de la maison : il me faut d'abord une carte."}
+Pas de texte hors du JSON."""
 
 SCHEMA_IA = {
     'type': 'object',

@@ -59,6 +59,8 @@ def delai_max(o):
         return abs(o['angle_deg']) / 30.0 + 8
     if a == 'attrape':
         return 150
+    if a == 'lache':
+        return 10
     return 900   # missions
 
 PHRASES_FIXES = [

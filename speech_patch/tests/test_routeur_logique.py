@@ -78,6 +78,10 @@ PLANS = [
     ("mission attrape tous les cubes", [TOUT]),
     ("ramasse les cubes rouges", [TOUT]),
     ("patrouille", [{'action': 'patrouille'}]),
+    ("lâche le cube", [{'action': 'lache'}]),
+    ("Relâche le Cube rouge.", [{'action': 'lache'}]),
+    ("ouvre la pince", [{'action': 'lache'}]),
+    ("attrape le cube rouge puis recule de 20 cm puis lâche-le", [ROUGE, re_(0.2), {'action': 'lache'}]),
     # état
     ("état", [{'action': 'etat'}]),
     ("status", [{'action': 'etat'}]),
@@ -119,7 +123,7 @@ def test_reprise(phrase):
     "dépose le cube dans le bac",    # étape 3
     "retourne à la base",            # étape 4
     "va à la cuisine",               # étape 4
-    "ouvre la pince",
+    "ferme la pince",
     "décale-toi",                    # côté manquant
     "avance de 0 cm",
 ])
@@ -188,12 +192,19 @@ def test_ia_plan_valide():
     {'plan': [{'action': 'avance', 'distance_m': 'loin'}], 'reponse': ''},
     {'plan': [{'action': 'crabe', 'cote': 'haut', 'distance_m': 0.2}], 'reponse': ''},
     {'plan': [{'action': 'attrape', 'couleur': 'bleu'}], 'reponse': ''},
-    {'plan': [{'action': 'tourne', 'angle_deg': 0}], 'reponse': ''},
+    {'plan': [{'action': 'tourne', 'angle_deg': 0}], 'reponse': ''},   # plus rien d'utile
     {'plan': [{'action': 'etat'}] * 6, 'reponse': ''},
     {'plan': [], 'reponse': ''},
 ])
 def test_ia_refus(obj):
     assert rl.valider_plan_ia(obj).genre == 'refus'
+
+
+def test_ia_etape_nulle_ignoree():
+    # Vu le 12/11 : « approche-toi un peu de moi » -> tourne 0° puis avance
+    r = rl.valider_plan_ia({'plan': [{'action': 'tourne', 'angle_deg': 0},
+                                     {'action': 'avance', 'distance_m': 0.3}], 'reponse': 'ok'})
+    assert r.genre == 'plan' and r.plan == [av(0.3)]
 
 
 def test_ia_conversation():
