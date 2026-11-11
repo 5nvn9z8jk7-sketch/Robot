@@ -61,6 +61,8 @@ echo.
 echo   Appuie sur une touche pour arrêter le serveur
 
 cd /d "%~dp0"
+:: Ouvre la page dans le navigateur 2 s après le démarrage du serveur
+start "" /min cmd /c "timeout /t 2 /nobreak >nul & start http://localhost:8888/robot_keypad.html"
 python -m http.server 8888 --bind 0.0.0.0
 
 pause
