@@ -1,6 +1,6 @@
 # État du projet
 
-Dernière mise à jour : 10/11/2026 — étape 0 terminée. **Étape 1 terminée** (PR #5, F1–F8 OK). **Étape 2 installée** (routeur d'ordres, branche `etape-2-routeur`, PR #6) : 117 tests hors robot OK, G1–G2 OK ; reste G3–G11.
+Dernière mise à jour : 10/11/2026 — étape 0 terminée. **Étape 1 terminée** (PR #5, F1–F8 OK). **Étape 2 installée** (routeur d'ordres, branche `etape-2-routeur`, PR #6) : 117 tests hors robot OK, G1–G9 OK ; reste G10 (IA) et G11 (redémarrage).
 
 ## Essais étape 2 du 11/11
 
@@ -11,7 +11,12 @@ Dernière mise à jour : 10/11/2026 — étape 0 terminée. **Étape 1 terminée
 | Incident lidar | badge « lidar muet » : `scan_to_scan_filter_chain` (Hiwonder) figé (32 % CPU, plus rien sur `/scan`, absent de `ros2 node list`) ; `/scan_raw` OK. Relancé à la main → 9,9 Hz. Ajouté au watchdog (relance si absent ou `/scan` muet) — **watchdog pas encore réinstallé** |
 | Réinstallation 12/11 | OK (watchdog surveille le filtre lidar) ; raccourci Bureau « Robot » (icône) ; la page s'ouvre toute seule |
 | G2 ordre écrit « avance de 30 cm » | OK |
-| G3–G11 | à faire |
+| G3 rotation + crabe | OK |
+| G4 enchaînement, G5 refus | OK |
+| G6 obstacle, G7 arrêt pendant un ordre | OK |
+| G8 touche P | 1er essai raté : cube perdu en approche. **Caméra au poignet** : le bras avait été bougé au clavier, or la référence (60 px) est mesurée bras haut pince ouverte → le pick remet désormais le bras en position de regard avant de chercher. 2e souci : ordre envoyé pendant la relance du pick → routeur bloqué 150 s → accusé de réception exigé en 3 s. Réinstallé : **OK** |
+| G9 micro du PC | OK (phrases reçues avec majuscules/points, comprises) |
+| G10–G11 | à faire |
 
 
 ## Étape 2 — ce qui change
