@@ -45,8 +45,8 @@ DEFAULT_FX = 423.376
 TARGET_COLOR = 'red'
 CMD_VEL_RATE = 0.05
 DETECT_TIMEOUT = 5.0
-TOL_X_PX = 15          # tolérance centrage (pixels)
-TOL_SIZE_PX = 8        # tolérance taille (pixels)
+TOL_X_PX = 8           # tolérance centrage (pixels) — 15 avant le 15/11
+TOL_SIZE_PX = 4        # tolérance taille (pixels) — 8 avant le 15/11
 STEP_FORWARD_M = 0.04  # pas d'avance par itération
 MAX_ITER = 60
 MAX_LOST = 3           # itérations consécutives sans cube avant abandon
@@ -358,12 +358,28 @@ class PickAndPlaceV6(Node):
 
     # ─── séquence ───
 
+    def _mesure_stable(self, n=3):
+        """Médiane de n détections successives (x, taille) : le bruit de la
+        détection (±3 px mesurés le 15/11) faisait valider trop tôt ou trop tard."""
+        xs, tailles = [], []
+        for _ in range(n):
+            c = self._get_red_cube(timeout=1.0)
+            if c is not None:
+                xs.append(c.x)
+                tailles.append((c.width + c.height) / 2.0)
+        if len(xs) < 2:
+            return None
+        xs.sort(); tailles.sort()
+        return xs[len(xs) // 2], tailles[len(tailles) // 2]
+
     def _position_and_grip(self, calib):
         target_x = float(calib[pick_calib.KEY_TARGET_X])
         target_size = float(calib[pick_calib.KEY_TARGET_SIZE])
-        noise = max(2.0, float(calib.get(pick_calib.KEY_NOISE, 2.0)))
-        tol_x = max(TOL_X_PX, noise * 4)
-        tol_size = max(TOL_SIZE_PX, noise * 3)
+        noise = max(1.0, float(calib.get(pick_calib.KEY_NOISE, 1.0)))
+        # Tolérances resserrées le 15/11 (avant : 15 px et 8 px, gonflées par le bruit) :
+        # 1 essai réussi sur 3, arrêts acceptés entre 62 et 72 px pour 68 visés (±2 cm).
+        tol_x = max(TOL_X_PX, noise * 2)
+        tol_size = max(TOL_SIZE_PX, noise * 1.5)
 
         lost = 0
         for i in range(MAX_ITER):
@@ -382,23 +398,37 @@ class PickAndPlaceV6(Node):
             err_x = cube.x - target_x
             err_size = target_size - size   # >0 : trop loin, il faut avancer
 
-            if abs(err_x) <= tol_x and abs(err_size) <= tol_size:
-                self.get_logger().info(
-                    f'  [{i+1}] ✅ En position (x={cube.x}, taille={size:.0f}px)')
-                return True
+            # Près du but : on confirme sur la médiane de 3 images avant de décider
+            if abs(err_x) <= 2 * tol_x and abs(err_size) <= 2 * tol_size:
+                m = self._mesure_stable()
+                if m is not None:
+                    err_x, err_size = m[0] - target_x, target_size - m[1]
+                    size = m[1]
+                if abs(err_x) <= tol_x and abs(err_size) <= tol_size:
+                    self.get_logger().info(
+                        f'  [{i+1}] ✅ En position (x={target_x + err_x:.0f}, taille={size:.0f}px, '
+                        f'visé {target_x:.0f} / {target_size:.0f}px)')
+                    return True
 
             # 1. Centrage prioritaire
             if abs(err_x) > tol_x:
                 self.get_logger().info(
                     f'  [{i+1}] err=({err_x:+.0f}px, {err_size:+.0f}px) -> centrage')
-                self._turn_to(math.atan2(cube.x - target_x, DEFAULT_FX))
+                self._turn_to(math.atan2(err_x, DEFAULT_FX))
                 continue
 
-            # 2. Approche
-            self.get_logger().info(
-                f'  [{i+1}] err=({err_x:+.0f}px, {err_size:+.0f}px) -> avance')
-            step = max(0.02, min(STEP_FORWARD_M, err_size / 300.0))
-            self._drive(-step)
+            # 2. Distance : petits pas près du but, et recul si trop près
+            #    (avant : il avançait toujours d'au moins 2 cm, même trop près)
+            if err_size > 0:
+                step = max(0.01, min(STEP_FORWARD_M, err_size / 350.0))
+                self.get_logger().info(
+                    f'  [{i+1}] err=({err_x:+.0f}px, {err_size:+.0f}px) -> avance {step*100:.0f} cm')
+                self._drive(-step)
+            else:
+                step = max(0.01, min(0.03, -err_size / 350.0))
+                self.get_logger().info(
+                    f'  [{i+1}] err=({err_x:+.0f}px, {err_size:+.0f}px) -> recule {step*100:.0f} cm')
+                self._drive(step)
 
         self.get_logger().warn('⏱️ Positionnement: max iterations')
         return False
