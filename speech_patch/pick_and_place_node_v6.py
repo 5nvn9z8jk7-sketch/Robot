@@ -496,6 +496,7 @@ class PickAndPlaceV6(Node):
 
         g_av, g_ga = SURVOL_GAIN_INIT, SURVOL_GAIN_INIT   # px de y par m avancé ; px de x par m à gauche
         perdu, inversions, sens_prec = 0, 0, {}
+        dernier = None
         for i in range(SURVOL_ITER):
             if self._abort:
                 return False
@@ -506,9 +507,18 @@ class PickAndPlaceV6(Node):
                 if perdu >= MAX_LOST:
                     self.get_logger().warn('⚠️ Cube perdu en survol')
                     return False
+                # Sorti par un bord (cible y=361 sur 400 : peu de marge) -> 1 cm en arrière
+                if dernier is not None:
+                    dx, dy = dernier[0] - sx, dernier[1] - sy
+                    if abs(dy) >= abs(dx):
+                        self._deplacer(-math.copysign(0.01, dy * g_av), 0.0)
+                    else:
+                        self._deplacer(0.0, -math.copysign(0.01, dx * g_ga))
+                    self.get_logger().info('  survol : cube sorti de l\'image, retour 1 cm')
                 continue
             perdu = 0
             x, y, _ = m
+            dernier = (x, y)
             ex, ey = x - sx, y - sy
             tol_eff = tol * (2 if inversions >= 4 else 1)
             if abs(ex) <= tol_eff and abs(ey) <= tol_eff:
