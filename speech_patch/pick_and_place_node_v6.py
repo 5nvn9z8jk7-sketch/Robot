@@ -14,10 +14,12 @@ Séquence:
   3. Préhension: descend le bras aux positions servos apprises, ferme la
      pince à gripper_close, remonte le bras.
 
-Déclencheurs: /vocal_detect/asr_result (voix ou touche P du keypad web).
+Déclencheur (étape 2) : /robot/ordre {"action": "attrape"} envoyé par routeur_ordres.py
+(voix, micro du PC, zone de texte ou touche P de la page). Fin : /robot/ordre/fin.
 Calibration: /home/ubuntu/speech_patch/pick_calib.json (rechargé à chaque run).
 """
 
+import json
 import math
 import sys
 import threading
@@ -43,8 +45,12 @@ DEFAULT_FX = 423.376
 TARGET_COLOR = 'red'
 CMD_VEL_RATE = 0.05
 DETECT_TIMEOUT = 5.0
-TOL_X_PX = 15          # tolérance centrage (pixels)
-TOL_SIZE_PX = 8        # tolérance taille (pixels)
+TOL_X_PX = 8           # tolérance centrage (pixels) — 15 avant le 15/11
+TOL_SIZE_PX = 4        # tolérance taille (pixels) — repli si le réglage n'a pas de y
+TOL_Y_PX = 12          # tolérance hauteur du cube dans l'image (pixels) ≈ 5 mm
+PX_Y_PAR_M = 2600.0    # mesuré le 15/11 : ~26 px de y par cm d'avance
+VITESSE_FINE = 0.03    # m/s pour les pas < 2 cm : à 0,08 m/s le robot dépassait de ~1 cm
+TOL_OSCILLATION_PX = 26  # après 3 changements de sens, on accepte à ±1 cm
 STEP_FORWARD_M = 0.04  # pas d'avance par itération
 MAX_ITER = 60
 MAX_LOST = 3           # itérations consécutives sans cube avant abandon
@@ -89,8 +95,14 @@ class PickAndPlaceV6(Node):
         self.tts_pub = self.create_publisher(String, '/tts_node/tts_text', 1)
         self.servo_pub = self.create_publisher(ServosPosition, 'servo_controller', 1)
 
+        # Étape 2 : le déclenchement vient du routeur (/robot/ordre) ; les phrases
+        # restent écoutées uniquement pour l'arrêt (« stop »), en secours du gardien.
         self.create_subscription(
             String, '/vocal_detect/asr_result', self._asr_cb, 1)
+        self.create_subscription(String, '/robot/ordre', self._ordre_cb, 10)
+        self.pub_fin = self.create_publisher(String, '/robot/ordre/fin', 10)
+        self._ordre_id = None
+        self._resultat = ('echec', '')
         self.create_subscription(
             ColorsInfo, '/color_detect_node/color_info', self._color_cb, 1)
         self.create_subscription(
@@ -129,18 +141,59 @@ class PickAndPlaceV6(Node):
             if running:
                 self.get_logger().warn('🛑 ARRET D\'URGENCE demandé - séquence interrompue')
             return
-        if not self._is_trigger(text):
+        # (plus de déclenchement direct ici : voir _ordre_cb)
+
+    def _ordre_cb(self, msg):
+        """Ordre du routeur : {"id": "r3", "action": "attrape", "couleur": "rouge"}."""
+        try:
+            o = json.loads(msg.data)
+        except ValueError:
+            return
+        if o.get('action') == 'lache':
+            # dans un fil à part : ne pas bloquer les autres messages (arrêt…) 1 s
+            threading.Thread(target=self._lacher, args=(o.get('id'),), daemon=True).start()
+            return
+        if o.get('action') != 'attrape':
             return
         if self._verrou:
             self._say("Arrêt général actif. Dis reprends d'abord.")
+            self._publier_fin(o.get('id'), 'refus', 'arrêt général actif')
             return
         with self._lock:
             if self._busy:
                 self.get_logger().info('Deja en cours, ignore')
-                return
-            self._busy = True
-            self._abort = False
+                occupe = True
+            else:
+                occupe = False
+                self._busy = True
+                self._abort = False
+                self._ordre_id = o.get('id')
+                self._resultat = ('echec', '')
+        if occupe:
+            self._publier_fin(o.get('id'), 'refus', 'saisie déjà en cours')
+            return
+        self._publier_fin(o.get('id'), 'recu')
         threading.Thread(target=self._run_sequence, daemon=True).start()
+
+    def _lacher(self, oid):
+        """« Lâche le cube » : ouvre la pince sur place (le bras ne bouge pas)."""
+        with self._lock:
+            occupe = self._busy
+        if occupe:
+            self._publier_fin(oid, 'refus', 'saisie en cours')
+            return
+        self._publier_fin(oid, 'recu')
+        calib = pick_calib.load_calib() or {}
+        ouvert = int(calib.get(pick_calib.KEY_GRIPPER_OPEN, pick_calib.DEFAULT_GRIPPER_OPEN))
+        self._say("J'ouvre la pince.")
+        self._move_servos({10: ouvert}, 0.8)
+        self._publier_fin(oid, 'ok')
+
+    def _publier_fin(self, oid, resultat, detail=''):
+        if oid is None:
+            return
+        self.pub_fin.publish(String(data=json.dumps(
+            {'id': oid, 'resultat': resultat, 'detail': detail}, ensure_ascii=False)))
 
     def _estop_cb(self, msg):
         """Arrêt général du gardien (ESPACE, bouton, « stop ») : interrompt la séquence."""
@@ -309,14 +362,42 @@ class PickAndPlaceV6(Node):
 
     # ─── séquence ───
 
+    def _mesure_stable(self, n=3):
+        """Médiane de n détections successives (x, y, taille)."""
+        xs, ys, tailles = [], [], []
+        for _ in range(n):
+            c = self._get_red_cube(timeout=1.0)
+            if c is not None:
+                xs.append(c.x); ys.append(c.y)
+                tailles.append((c.width + c.height) / 2.0)
+        if len(xs) < 2:
+            return None
+        med = lambda v: sorted(v)[len(v) // 2]
+        return med(xs), med(ys), med(tailles)
+
     def _position_and_grip(self, calib):
+        """Place le robot pour que le cube soit à la position de référence du réglage.
+
+        Distance : guidée par la HAUTEUR du cube dans l'image (y), et non plus par sa
+        taille. La caméra regarde le sol en plongée : y suit la distance au sol de près,
+        alors que la taille dépend de l'orientation du cube (vu de biais = plus gros).
+        Vu le 15/11 : arrêts « à la bonne taille » avec y = 26, 48 ou 90 pour 99 visé,
+        pince tombée ~1,5 cm avant le cube 2 fois sur 3."""
         target_x = float(calib[pick_calib.KEY_TARGET_X])
         target_size = float(calib[pick_calib.KEY_TARGET_SIZE])
-        noise = max(2.0, float(calib.get(pick_calib.KEY_NOISE, 2.0)))
-        tol_x = max(TOL_X_PX, noise * 4)
-        tol_size = max(TOL_SIZE_PX, noise * 3)
+        target_y = calib.get(pick_calib.KEY_TARGET_Y)
+        par_y = target_y is not None
+        target_y = float(target_y) if par_y else 0.0
+        noise = max(1.0, float(calib.get(pick_calib.KEY_NOISE, 1.0)))
+        tol_x = max(TOL_X_PX, noise * 2)
+        tol_d = max(TOL_Y_PX, noise * 2) if par_y else max(TOL_SIZE_PX, noise * 1.5)
+
+        def erreur_distance(y, taille):
+            # > 0 : cube trop loin, il faut avancer
+            return (target_y - y) if par_y else (target_size - taille)
 
         lost = 0
+        sens_prec, inversions = 0, 0
         for i in range(MAX_ITER):
             if self._abort:
                 return False
@@ -329,27 +410,47 @@ class PickAndPlaceV6(Node):
                 continue
             lost = 0
 
-            size = (cube.width + cube.height) / 2.0
-            err_x = cube.x - target_x
-            err_size = target_size - size   # >0 : trop loin, il faut avancer
+            x, y, size = cube.x, cube.y, (cube.width + cube.height) / 2.0
+            err_x = x - target_x
+            err_d = erreur_distance(y, size)
 
-            if abs(err_x) <= tol_x and abs(err_size) <= tol_size:
-                self.get_logger().info(
-                    f'  [{i+1}] ✅ En position (x={cube.x}, taille={size:.0f}px)')
-                return True
+            # Près du but : on confirme sur la médiane de 3 images avant de décider
+            if abs(err_x) <= 2 * tol_x and abs(err_d) <= 2 * tol_d:
+                m = self._mesure_stable()
+                if m is not None:
+                    x, y, size = m
+                    err_x, err_d = x - target_x, erreur_distance(y, size)
+                tol_d_eff = max(tol_d, TOL_OSCILLATION_PX) if (par_y and inversions >= 3) else tol_d
+                if abs(err_x) <= tol_x and abs(err_d) <= tol_d_eff:
+                    self.get_logger().info(
+                        f'  [{i+1}] ✅ En position (x={x:.0f}, y={y:.0f}, taille={size:.0f}px ; '
+                        f'visé x={target_x:.0f}, y={target_y:.0f}, taille={target_size:.0f})')
+                    return True
 
             # 1. Centrage prioritaire
             if abs(err_x) > tol_x:
                 self.get_logger().info(
-                    f'  [{i+1}] err=({err_x:+.0f}px, {err_size:+.0f}px) -> centrage')
-                self._turn_to(math.atan2(cube.x - target_x, DEFAULT_FX))
+                    f'  [{i+1}] x={x:.0f} y={y:.0f} taille={size:.0f} -> centrage')
+                self._turn_to(math.atan2(err_x, DEFAULT_FX))
                 continue
 
-            # 2. Approche
-            self.get_logger().info(
-                f'  [{i+1}] err=({err_x:+.0f}px, {err_size:+.0f}px) -> avance')
-            step = max(0.02, min(STEP_FORWARD_M, err_size / 300.0))
-            self._drive(-step)
+            # 2. Distance : pas proportionnel à l'écart, petit près du but ; recul si trop près
+            gain = PX_Y_PAR_M if par_y else 350.0
+            step = min(STEP_FORWARD_M, max(0.005, abs(err_d) / gain))
+            vitesse = VITESSE_FINE if step < 0.02 else 0.08
+            sens = 1 if err_d > 0 else -1
+            if sens_prec and sens != sens_prec:
+                inversions += 1
+            sens_prec = sens
+            if err_d > 0:
+                self.get_logger().info(
+                    f'  [{i+1}] x={x:.0f} y={y:.0f} taille={size:.0f} -> avance {step*100:.1f} cm')
+                self._drive(-step, linear_speed=vitesse)
+            else:
+                step = min(step, 0.03)
+                self.get_logger().info(
+                    f'  [{i+1}] x={x:.0f} y={y:.0f} taille={size:.0f} -> recule {step*100:.1f} cm')
+                self._drive(step, linear_speed=vitesse)
 
         self.get_logger().warn('⏱️ Positionnement: max iterations')
         return False
@@ -397,10 +498,25 @@ class PickAndPlaceV6(Node):
                 }
                 self.get_logger().warn('Calibration absente: valeurs de secours (imprecis)')
 
+            # La caméra est au poignet : ce qu'elle voit dépend de la position du bras.
+            # La référence (taille 60 px…) a été mesurée bras HAUT, pince OUVERTE
+            # (teach_pick_v6.py). On y remet le bras avant de chercher : avant, si le bras
+            # avait été bougé au clavier, le cube sortait de l'image en approche (vu le 12/11).
+            regard = {int(k): v for k, v in calib.get(pick_calib.KEY_ARM_UP,
+                                                       pick_calib.DEFAULT_UP).items()}
+            regard[10] = int(calib.get(pick_calib.KEY_GRIPPER_OPEN, pick_calib.DEFAULT_GRIPPER_OPEN))
+            self.get_logger().info(f'Bras en position de regard : {regard}')
+            self._move_servos(regard, 1.5)
+            if self._abort:
+                self._resultat = ('annule', 'arrêt')
+                return
+            time.sleep(COLOR_SETTLE_S + 0.3)   # images prises pendant le mouvement ignorées
+
             self._say("Je cherche le cube rouge.")
             cube = self._get_red_cube(timeout=DETECT_TIMEOUT)
             if cube is None:
                 self._say("Je ne vois pas de cube rouge. Place-le devant moi.")
+                self._resultat = ('echec', 'pas de cube rouge en vue')
                 return
             self.get_logger().info(
                 f'Cube: ({cube.x},{cube.y}) {cube.width}x{cube.height}px')
@@ -411,6 +527,7 @@ class PickAndPlaceV6(Node):
                     self._say("Arrêt.")
                 else:
                     self._say("Je n'ai pas reussi a me placer.")
+                    self._resultat = ('echec', 'placement impossible')
                 return
 
             # Avance a l'aveugle: reference -> point de grip (le point de grip
@@ -430,6 +547,7 @@ class PickAndPlaceV6(Node):
                 return
             self._say("Voilà, c'est fait !")
             self.get_logger().info('✅ Séquence terminée')
+            self._resultat = ('ok', '')
         except Exception as e:
             self.get_logger().error(f'Erreur: {e}')
             import traceback
@@ -438,8 +556,14 @@ class PickAndPlaceV6(Node):
         finally:
             self._stop()
             with self._lock:
+                annule = self._abort
+                oid, self._ordre_id = self._ordre_id, None
+                res, detail = self._resultat
                 self._busy = False
                 self._abort = False
+            if annule and res != 'ok':
+                res, detail = 'annule', 'arrêt'
+            self._publier_fin(oid, res, detail)
 
 
 def main(args=None):

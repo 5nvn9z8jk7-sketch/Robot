@@ -1,6 +1,35 @@
 # État du projet
 
-Dernière mise à jour : 10/11/2026 — étape 0 terminée. **Étape 1 terminée** : fusionnée dans main (PR #5), essais F1 à F8 validés. Prochaine : étape 2 (routeur d'ordres unique).
+Dernière mise à jour : 10/11/2026 — étape 0 terminée. **Étape 1 terminée** (PR #5, F1–F8 OK). **Étape 2 installée** (routeur d'ordres, branche `etape-2-routeur`, PR #6) : 117 tests hors robot OK, G1–G11 OK (pick réglé à 15 cm). Reste : vérifier au prochain démarrage que le watchdog relance seul le lidar, puis fusion PR #6.
+
+## Essais étape 2 du 11/11
+
+| Essai | Résultat |
+|---|---|
+| G1 installation | OK : 4 programmes à 1 processus, Ollama joignable depuis le robot, `/robot/ordre` reçu par déplacements + pick + mission |
+| Voix rapide | 3/12 phrases préparées : la synthèse a planté (ScatterND) et bloquait les suivantes → `voix_rapide.py` réessaie chaque phrase et continue ; installé, 9/9 OK |
+| Incident lidar | badge « lidar muet » : `scan_to_scan_filter_chain` (Hiwonder) figé (32 % CPU, plus rien sur `/scan`, absent de `ros2 node list`) ; `/scan_raw` OK. Relancé à la main → 9,9 Hz. Ajouté au watchdog (relance si absent ou `/scan` muet) — **watchdog pas encore réinstallé** |
+| Réinstallation 12/11 | OK (watchdog surveille le filtre lidar) ; raccourci Bureau « Robot » (icône) ; la page s'ouvre toute seule |
+| G2 ordre écrit « avance de 30 cm » | OK |
+| G3 rotation + crabe | OK |
+| G4 enchaînement, G5 refus | OK |
+| G6 obstacle, G7 arrêt pendant un ordre | OK |
+| G8 touche P | 1er essai raté : cube perdu en approche. **Caméra au poignet** : le bras avait été bougé au clavier, or la référence (60 px) est mesurée bras haut pince ouverte → le pick remet désormais le bras en position de regard avant de chercher. 2e souci : ordre envoyé pendant la relance du pick → routeur bloqué 150 s → accusé de réception exigé en 3 s. Réinstallé : **OK** |
+| G9 micro du PC | OK (phrases reçues avec majuscules/points, comprises) |
+| G10 IA locale | 1er essai : plans maladroits (« approche-toi un peu » → tourne 0° + avance 1,5 m, refusé par le contrôle ; refus de bavarder). Consigne refaite (un peu = 20 cm, approche-toi = 0,3 m, conversation autorisée, exemples), étapes nulles ignorées, nouvelle action « lâche » (ouvre la pince). Réinstallé : approche-toi et blague **OK**, lâche OK |
+| Pick après remise du bras en regard | raté (dépasse le cube) : à taille égale (60 px) le cube apparaît à y=163 au lieu de 113 au réglage du 30/10 → la caméra regarde ~7° plus haut (mécanique ?). **Réglage refait le 12/11** avec `teach_pick_v6.py` : référence x=326 y=46 taille 47 px, avance à l'aveugle **30 cm** (cube posé à 30 cm du repère au lieu de 15–20 : à refaire plus près si la pince passe à côté). Essai P à faire |
+| Réglage pince 15/11 | refait cube à 15 cm : référence x=317 y=99 taille 68 px (bruit ±2,9 px), avance aveugle 15 cm → **pick réussi** (1 essai) |
+| G11 redémarrage (15/11) | routeur + gardien + exécuteurs lancés seuls, fichiers = GitHub. **Lidar muet au boot** : `/dev/lidar` (ttyCH341USB2) créé ~3 min APRÈS le lancement du programme du lidar → moteur qui tourne, aucune mesure, gardien bloque tout. Relancé (`maj_lidar.sh`) → `/scan_raw` 10 Hz ; watchdog relance désormais `sclidar_scan_publisher` si `/scan_raw` se tait. À vérifier au prochain démarrage |
+
+
+## Étape 2 — ce qui change
+
+- `routeur_ordres.py` + `routeur_logique.py` : seul programme qui comprend les phrases (`/vocal_detect/asr_result`). Grammaire fixe, sinon IA locale (Ollama, JSON contrôlé, « Je lance ? » avant de bouger). Envoie un ordre à la fois sur `/robot/ordre`, attend `/robot/ordre/fin`.
+- `llm_move_bridge_node.py` v4 : exécute avance / recule / crabe (odométrie) et tourne (chrono) ; échec « obstacle » si le gardien bloque plus de 1,5 s.
+- Pick v6 et mission : déclenchés par `/robot/ordre` (plus de mots-clés propres) ; le pick garde « stop » en secours.
+- Page : zone de texte, bouton « Micro PC » (reconnaissance du navigateur), ligne Entendu / Compris / État.
+- Limites : avance 3 m, recul 0,4 m, crabe 1 m, rotation 360°.
+- Le retour à la base (touche B) répond « pas encore disponible » : l'ancien code roulait dans le mauvais sens (`_drive`).
 
 ## Essais étape 1 du 10/11
 
@@ -49,7 +78,7 @@ Observé en passant : la mission « attrape tous les cubes » annonce « 1 cube 
 |---|---|---|
 | 0 | Remise en ordre : PR #3 (arrêt pick v6), ménage, lanceurs, doc, voix | **terminée** (PR #4 fusionnée le 10/11), essais : [`docs/ESSAIS_ETAPE_0.md`](docs/ESSAIS_ETAPE_0.md) |
 | 1 | Sécurité commune : arrêt global, priorité des commandes, anti-collision lidar | **terminée** (PR #5), F1–F8 OK, essais : [`docs/ESSAIS_ETAPE_1.md`](docs/ESSAIS_ETAPE_1.md) |
-| 2 | Routeur d'ordres unique (grammaire fixe + LLM), mêmes ordres voix robot / voix PC / page | à faire |
+| 2 | Routeur d'ordres unique (grammaire fixe + LLM), mêmes ordres voix robot / voix PC / page | **écrite**, essais à faire : [`docs/ESSAIS_ETAPE_2.md`](docs/ESSAIS_ETAPE_2.md) ; micro du robot en 2b |
 | 3 | Compétences fiables : déplacements mesurés, pick, dépose bac, recherche avec profondeur | à faire |
 | 4 | Navigation avec carte (SLAM + Nav2), lieux nommés, retour base | à faire (prérequis : IMU) |
 | 5 | Page Web unique servie par le robot, un seul chemin micro PC | à faire |

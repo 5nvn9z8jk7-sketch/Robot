@@ -19,7 +19,8 @@ Fonctionnalités:
   - Séquence de dépôt: attrape → recule → lâche → cherche suivant
 
 Topics:
-  - Écoute: /vocal_detect/asr_result (commandes)
+  - Écoute: /robot/ordre (étape 2 : ordres déjà compris par routeur_ordres.py)
+  - Publie: /robot/ordre/fin (fin de mission)
   - Publie: /tts_node/tts_text (feedback vocal)
   - Publie: /controller/cmd_vel (mouvements)
   - Publie: /servo_controller (bras)
@@ -136,8 +137,11 @@ class AutonomousMissionNode(Node):
         )
 
         # Subscriptions
-        self.create_subscription(
-            String, '/vocal_detect/asr_result', self._asr_callback, 1)
+        # Étape 2 : les phrases sont comprises par routeur_ordres.py, qui envoie
+        # {"action": "attrape_tout" | "patrouille"} sur /robot/ordre.
+        self.create_subscription(String, '/robot/ordre', self._ordre_callback, 10)
+        self.pub_fin = self.create_publisher(String, '/robot/ordre/fin', 10)
+        self._ordre_id = None
         self.create_subscription(
             ColorsInfo, '/color_detect_node/color_info', self._color_callback, 1)
         self.create_subscription(
@@ -153,44 +157,37 @@ class AutonomousMissionNode(Node):
         self.create_timer(5.0, self._battery_check_timer)
 
         self.get_logger().info('🤖 Autonomous Mission Node prêt')
-        self._say("Système de mission autonome activé. Dis 'mission attrape tous les cubes' pour commencer.")
+        self.get_logger().info("Ordres reçus du routeur : attrape_tout, patrouille")
 
     # ─── Callbacks ───
 
-    def _asr_callback(self, msg):
-        text = msg.data.strip().lower()
-        if not text:
+    def _ordre_callback(self, msg):
+        try:
+            o = json.loads(msg.data)
+        except ValueError:
             return
-        self.get_logger().info(f'🎤: "{text}"')
-
-        # Analyser la commande
-        command = self._parse_command(text)
-        if command is None:
+        commande = {'attrape_tout': 'attrape_tout', 'patrouille': 'patrouille'}.get(o.get('action'))
+        if commande is None:
             return
-
-        # Gérer les commandes immédiates (même en mission)
-        if command == 'stop':
-            en_cours = self._state not in (STATE_IDLE, STATE_LOW_BATTERY)
-            self._abort_mission()
-            if en_cours:   # sinon le gardien annonce déjà « Arrêt général »
-                self._say("Mission annulée.")
-            return
-        if command == 'status':
-            self._announce_status()
-            return
-
         if self._verrou:
             self._say("Arrêt général actif. Dis reprends d'abord.")
+            self._publier_fin(o.get('id'), 'refus', 'arrêt général actif')
             return
-
-        # Si une mission est en cours, ignorer les nouvelles commandes
         with self._lock:
-            if self._state != STATE_IDLE:
-                self._say("Une mission est déjà en cours. Dis 'stop' pour annuler.")
-                return
+            occupe = self._state != STATE_IDLE
+        if occupe:
+            self._say("Une mission est déjà en cours. Dis 'stop' pour annuler.")
+            self._publier_fin(o.get('id'), 'refus', 'mission déjà en cours')
+            return
+        self._ordre_id = o.get('id')
+        self._publier_fin(o.get('id'), 'recu')
+        self._start_mission(commande, o.get('action'))
 
-        # Démarrer la mission
-        self._start_mission(command, text)
+    def _publier_fin(self, oid, resultat, detail=''):
+        if oid is None:
+            return
+        self.pub_fin.publish(String(data=json.dumps(
+            {'id': oid, 'resultat': resultat, 'detail': detail}, ensure_ascii=False)))
 
     def _estop_callback(self, msg):
         """Arrêt général du gardien : annule la mission en cours."""
@@ -225,9 +222,10 @@ class AutonomousMissionNode(Node):
         elif self._battery_level <= BATTERY_LOW_THRESHOLD:
             if self._state not in [STATE_IDLE, STATE_LOW_BATTERY, STATE_RETURNING]:
                 self.get_logger().warn(f'🪫 Batterie faible: {self._battery_level}% — retour base')
-                self._say(f"Batterie faible, {self._battery_level}%. Je retourne à la base.")
+                # Plus de retour automatique à la base : _drive roule dans le mauvais
+                # sens (point ouvert, étape 3/4). On arrête la mission et on prévient.
+                self._say(f"Batterie faible, {self._battery_level}%. J'arrête la mission, recharge-moi.")
                 self._abort_mission()
-                self._start_mission('base', 'retour base batterie faible')
 
     # ─── Parsing commandes ───
 
@@ -269,6 +267,7 @@ class AutonomousMissionNode(Node):
 
     def _run_mission(self, command, full_text):
         """Exécute la mission complète."""
+        resultat = 'ok'
         try:
             if command in ['mission', 'attrape_tout']:
                 self._mission_pick_all()
@@ -281,11 +280,16 @@ class AutonomousMissionNode(Node):
         except Exception as e:
             self.get_logger().error(f'Erreur mission: {e}')
             self._say("Erreur pendant la mission.")
+            resultat = 'echec'
         finally:
             with self._lock:
                 self._state = STATE_IDLE
                 self._current_mission = None
             self._stop_robot()
+            if self._abort and resultat == 'ok':
+                resultat = 'annule'
+            oid, self._ordre_id = self._ordre_id, None
+            self._publier_fin(oid, resultat)
 
     # ─── Missions ───
 

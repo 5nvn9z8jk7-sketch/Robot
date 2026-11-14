@@ -27,7 +27,8 @@ titre "PROCESSUS QUI ECOUTENT LA VOIX OU PILOTENT LES ROUES (nombre)"
 for p in '[p]ick_and_place_node_v6' '[p]ick_and_place_node.py' '[p]ick_and_place_node_v[2-5]' \
          '[v]oice_pick_node' '[l]lm_move_bridge' '[a]utonomous_mission' '[l]lm_control_move' \
          '[a]gent_process' '[v]ocal_detect' '[s]imple_asr_node' '[w]s_audio_asr' \
-         '[p]c_audio_asr_server' '[s]imple_color_detect' '[t]ts_node' '[r]osbridge'; do
+         '[p]c_audio_asr_server' '[s]imple_color_detect' '[t]ts_node' '[r]osbridge' \
+         '[g]ardien_securite' '[r]outeur_ordres'; do
   printf '  %-32s %s\n' "$p" "$(pgrep -fc "$p")"
 done
 
@@ -39,6 +40,9 @@ timeout 15 ros2 topic info -v /controller/cmd_vel 2>/dev/null | grep -E 'Node na
 
 titre "QUI ECOUTE /vocal_detect/asr_result"
 timeout 15 ros2 topic info -v /vocal_detect/asr_result 2>/dev/null | grep -E 'Node name|Publisher count|Subscription count'
+
+titre "QUI RECOIT LES ORDRES DU ROUTEUR (/robot/ordre)"
+timeout 15 ros2 topic info -v /robot/ordre 2>/dev/null | grep -E 'Node name|Publisher count|Subscription count'
 
 titre "FREQUENCE DES CAPTEURS (6 s chacun)"
 for t in /odom /scan /imu /ros_robot_controller/imu_raw /depth_cam/rgb0/image_raw /depth_cam/depth0/image_raw /color_detect_node/color_info; do
@@ -66,6 +70,7 @@ tail -20 /tmp/watchdog.log 2>/dev/null
 titre "EMPREINTES DES FICHIERS ACTIFS (comparaison avec GitHub)"
 cd "$D" 2>/dev/null && md5sum pick_and_place_node_v6.py pick_calib.py pick_calib.json simple_color_detect_v3.py \
   autonomous_mission_node.py llm_move_bridge_node.py robot_watchdog.py camera_supervisor.py \
+  gardien_securite.py securite_logique.py voix_rapide.py routeur_ordres.py routeur_logique.py \
   start_watchdogs.sh ws_audio_asr_node.py speech_offline_patch.py 2>&1
 echo "Fichiers .py présents dans $D :"
 ls "$D"/*.py 2>/dev/null | xargs -n1 basename | tr '\n' ' '; echo

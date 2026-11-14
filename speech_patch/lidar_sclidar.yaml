@@ -1,0 +1,8 @@
+# Réglages du programme du lidar (copie de ceux de lidar.launch.py, relevés le 15/11).
+# Utilisé par robot_watchdog.py pour relancer le lidar s'il n'envoie plus de mesures.
+/**:
+  ros__parameters:
+    baudrate: 230400
+    frame_id: lidar_frame
+    port: /dev/lidar
+    version: 4

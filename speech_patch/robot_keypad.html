@@ -122,6 +122,13 @@
   }
   .tts-box:empty::before { content: 'En attente de réponse vocale...'; color: #484f58; font-size: 0.85em; }
   .hint { color: #484f58; font-size: 0.75em; margin-top: 10px; }
+  .ordre-zone { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 12px; margin: 10px 0; text-align: left; }
+  .ordre-ligne { display: flex; gap: 8px; }
+  .ordre-ligne input { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #30363d; background: #0d1117; color: #e6edf3; font-size: 1em; }
+  .ordre-ligne button { padding: 10px 14px; border-radius: 8px; border: 1px solid #30363d; background: #21262d; color: #e6edf3; cursor: pointer; font-size: 0.95em; }
+  .ordre-ligne button.ecoute { background: #5a1e1e; border-color: #f85149; }
+  .routeur-box { margin-top: 8px; font-size: 0.85em; color: #8b949e; line-height: 1.5; }
+  .routeur-box b { color: #e6edf3; }
   kbd { background: #21262d; border: 1px solid #30363d; border-radius: 4px; padding: 2px 6px; font-size: 0.8em; font-family: monospace; }
 </style>
 </head>
@@ -137,6 +144,16 @@
   <span class="badge disconnected" id="statusSecu">Sécurité: inconnue</span>
   <span class="badge" id="statusKey" style="background:#21262d;color:#8b949e;min-width:80px;">Touche: --</span>
 </div>
+
+<div class="ordre-zone">
+  <div class="ordre-ligne">
+    <input type="text" id="ordreTexte" placeholder="Écris un ordre : avance de 50 cm, tourne à droite de 45 degrés…" autocomplete="off">
+    <button onclick="envoyerOrdre()">Envoyer</button>
+    <button id="btnMicro" onclick="microPC()">🎤 Micro PC</button>
+  </div>
+  <div class="routeur-box" id="routeurBox">Routeur : en attente…</div>
+</div>
+
 
 <div class="speed-control">
   <label>Vitesse linéaire: <span class="speed-value" id="speedVal">0.3</span> m/s | Rotation: <span class="speed-value" id="rotVal">1.0</span> rad/s</label>
@@ -389,6 +406,7 @@ function connectRobot() {
     ws.send(JSON.stringify({ op: 'advertise', topic: '/robot/cmd_vel/manuel', type: 'geometry_msgs/Twist' }));
     ws.send(JSON.stringify({ op: 'advertise', topic: '/robot/estop', type: 'std_msgs/Bool' }));
     subscribe('/robot/securite/etat');
+    subscribe('/robot/routeur/etat');
     subscribe('/tts_node/tts_text');
     subscribe('/agent_process/result');
     setTimeout(checkMotors, 1000);
@@ -402,6 +420,9 @@ function connectRobot() {
         if (msg.topic === '/tts_node/tts_text') {
           document.getElementById('ttsBox').textContent = '🗣️ ' + msg.msg.data;
           log('TTS: "' + msg.msg.data + '"', 'ok');
+        }
+        if (msg.topic === '/robot/routeur/etat') {
+          majRouteur(msg.msg.data);
         }
         if (msg.topic === '/robot/securite/etat') {
           majSecurite(msg.msg.data);
@@ -511,7 +532,6 @@ async function sendVoice(num) {
   const text = VOICE_CMDS[num];
   if (!text) return;
   log('[' + num + '] Vocal: "' + text + '"', 'cmd');
-  if (!llmReady) { log('LLM non disponible', 'err'); return; }
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ op: 'publish', topic: '/vocal_detect/asr_result', msg: { data: text } }));
     log('[' + num + '] Envoyé à l\'ASR', 'ok');
@@ -578,6 +598,13 @@ function resetArm() {
 
 // === CLAVIER UNIQUE (toutes les touches) ===
 document.addEventListener('keydown', (e) => {
+  // Saisie dans la zone d'ordre : les touches ne pilotent PAS le robot
+  // (sinon « p » lancerait la saisie, ESPACE l'arrêt général…).
+  if (e.target && e.target.id === 'ordreTexte') {
+    if (e.key === 'Enter') { e.preventDefault(); envoyerOrdre(); }
+    if (e.key === 'Escape') { e.target.blur(); }
+    return;
+  }
   // Debug: afficher la touche pressée dans le badge
   var keyBadge = document.getElementById('statusKey');
   if (keyBadge) keyBadge.textContent = 'Touche: ' + e.key;
@@ -662,6 +689,56 @@ function updatePickDist() {
     }));
     log('Distance cible (depth): ' + val.toFixed(2) + ' m', 'cmd');
   }
+}
+
+// === ORDRES ÉCRITS OU DICTÉS (étape 2) ===
+// Même chemin que le micro du robot : la phrase va sur /vocal_detect/asr_result,
+// le routeur du robot la comprend (grammaire fixe, sinon IA locale).
+function envoyerTexte(texte) {
+  texte = (texte || '').trim();
+  if (!texte) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) { log('Robot non connecté', 'err'); return; }
+  ws.send(JSON.stringify({ op: 'publish', topic: '/vocal_detect/asr_result', msg: { data: texte } }));
+  log('Ordre : "' + texte + '"', 'cmd');
+}
+
+function envoyerOrdre() {
+  var champ = document.getElementById('ordreTexte');
+  envoyerTexte(champ.value);
+  champ.value = '';
+  champ.blur();   // ESPACE redevient immédiatement l'arrêt général
+}
+
+var reco = null;
+function microPC() {
+  var btn = document.getElementById('btnMicro');
+  var R = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!R) { log('Micro PC : ce navigateur ne sait pas reconnaître la voix (utiliser Chrome ou Edge)', 'err'); return; }
+  if (reco) { reco.stop(); return; }
+  reco = new R();
+  reco.lang = 'fr-FR';
+  reco.interimResults = false;
+  reco.maxAlternatives = 1;
+  reco.onstart = function () { btn.classList.add('ecoute'); btn.textContent = '🎤 Parle…'; };
+  reco.onresult = function (ev) {
+    var t = ev.results[0][0].transcript;
+    document.getElementById('ordreTexte').value = t;
+    envoyerTexte(t);
+  };
+  reco.onerror = function (ev) { log('Micro PC : ' + ev.error, 'err'); };
+  reco.onend = function () { btn.classList.remove('ecoute'); btn.textContent = '🎤 Micro PC'; reco = null; };
+  reco.start();
+}
+
+function majRouteur(json) {
+  try {
+    var e = JSON.parse(json);
+    var esc = function (x) { return String(x || '').replace(/[&<>]/g, function (c) { return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]; }); };
+    document.getElementById('routeurBox').innerHTML =
+      'Entendu : <b>' + esc(e.texte || '—') + '</b><br>' +
+      'Compris : <b>' + esc(e.compris || '—') + '</b>' + (e.source ? ' (' + (e.source === 'ia' ? 'IA' : 'grammaire') + ')' : '') + '<br>' +
+      'État : <b>' + esc(e.etat) + '</b>' + (e.dit ? ' — dit : « ' + esc(e.dit) + ' »' : '');
+  } catch (err) {}
 }
 
 // === SÉCURITÉ (étape 1) ===
