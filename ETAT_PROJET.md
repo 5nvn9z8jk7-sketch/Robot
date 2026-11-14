@@ -1,6 +1,6 @@
 # État du projet
 
-Dernière mise à jour : 10/11/2026 — étape 0 terminée. **Étape 1 terminée** (PR #5, F1–F8 OK). **Étape 2 installée** (routeur d'ordres, branche `etape-2-routeur`, PR #6) : 117 tests hors robot OK, G1–G10 OK ; reste l'essai P avec le nouveau réglage de la pince, puis G11 (redémarrage). Pause recharge (12/11).
+Dernière mise à jour : 10/11/2026 — étape 0 terminée. **Étape 1 terminée** (PR #5, F1–F8 OK). **Étape 2 installée** (routeur d'ordres, branche `etape-2-routeur`, PR #6) : 117 tests hors robot OK, G1–G11 OK (pick réglé à 15 cm). Reste : vérifier au prochain démarrage que le watchdog relance seul le lidar, puis fusion PR #6.
 
 ## Essais étape 2 du 11/11
 
@@ -18,7 +18,8 @@ Dernière mise à jour : 10/11/2026 — étape 0 terminée. **Étape 1 terminée
 | G9 micro du PC | OK (phrases reçues avec majuscules/points, comprises) |
 | G10 IA locale | 1er essai : plans maladroits (« approche-toi un peu » → tourne 0° + avance 1,5 m, refusé par le contrôle ; refus de bavarder). Consigne refaite (un peu = 20 cm, approche-toi = 0,3 m, conversation autorisée, exemples), étapes nulles ignorées, nouvelle action « lâche » (ouvre la pince). Réinstallé : approche-toi et blague **OK**, lâche OK |
 | Pick après remise du bras en regard | raté (dépasse le cube) : à taille égale (60 px) le cube apparaît à y=163 au lieu de 113 au réglage du 30/10 → la caméra regarde ~7° plus haut (mécanique ?). **Réglage refait le 12/11** avec `teach_pick_v6.py` : référence x=326 y=46 taille 47 px, avance à l'aveugle **30 cm** (cube posé à 30 cm du repère au lieu de 15–20 : à refaire plus près si la pince passe à côté). Essai P à faire |
-| G11 | à faire |
+| Réglage pince 15/11 | refait cube à 15 cm : référence x=317 y=99 taille 68 px (bruit ±2,9 px), avance aveugle 15 cm → **pick réussi** (1 essai) |
+| G11 redémarrage (15/11) | routeur + gardien + exécuteurs lancés seuls, fichiers = GitHub. **Lidar muet au boot** : `/dev/lidar` (ttyCH341USB2) créé ~3 min APRÈS le lancement du programme du lidar → moteur qui tourne, aucune mesure, gardien bloque tout. Relancé (`maj_lidar.sh`) → `/scan_raw` 10 Hz ; watchdog relance désormais `sclidar_scan_publisher` si `/scan_raw` se tait. À vérifier au prochain démarrage |
 
 
 ## Étape 2 — ce qui change
