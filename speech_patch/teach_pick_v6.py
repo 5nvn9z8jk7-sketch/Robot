@@ -126,6 +126,20 @@ def main():
     spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
     spin_thread.start()
 
+    # --regard-actuel : la position où se trouve le bras MAINTENANT devient la
+    # position de recherche (« regard ») ; la référence y est mesurée et la
+    # saisie y remettra le bras avant de chercher le cube.
+    regard = dict(pick_calib.DEFAULT_UP)
+    if '--regard-actuel' in sys.argv:
+        from bras_etat import lire_positions
+        try:
+            regard = lire_positions(node)
+        except Exception as e:
+            print(f'ERREUR : position du bras illisible ({e}). Rien n\'est modifié.')
+            rclpy.shutdown()
+            return
+        print(f'Position de recherche retenue (bras actuel) : {regard}')
+
     # Repart des positions deja apprises si une calibration existe
     calib = pick_calib.load_calib()
     if calib:
@@ -197,7 +211,7 @@ def main():
     except EOFError:
         pass
     node.move_servos({10: gripper_open}, 0.5)
-    up = dict(pick_calib.DEFAULT_UP)
+    up = dict(regard)
     up[10] = gripper_open
     node.move_servos(up, 1.5)
 
@@ -235,7 +249,7 @@ def main():
         target_x=stats['x'], target_y=stats['y'], target_size=stats['size'],
         extra_forward_m=extra_m, noise_px=stats['noise'], samples=stats['n'],
         servo_positions=positions, gripper_close=gripper_close,
-        gripper_open=gripper_open, arm_up=pick_calib.DEFAULT_UP)
+        gripper_open=gripper_open, arm_up=regard)
 
     print()
     print(f'Calibration sauvegardee dans {path}')
