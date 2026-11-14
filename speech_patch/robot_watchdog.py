@@ -47,6 +47,12 @@ NODES_CONFIG = [
     ("gardien_securite",
      "python3 -u /home/ubuntu/speech_patch/gardien_securite.py",
      None, 1, 2),
+    # Programme du lidar (/scan_raw). Vu le 15/11 : lancé au boot AVANT que le port
+    # /dev/lidar n'existe (créé 3 min plus tard) -> moteur qui tourne, aucune mesure,
+    # et le gardien bloque tous les déplacements. Relancé ici si /scan_raw se tait.
+    ("sclidar_scan_publisher",
+     "bash -c 'source /home/ubuntu/third_party/third_party_ws/install/setup.bash; exec /home/ubuntu/third_party/third_party_ws/install/sclidar_ros2/lib/sclidar_ros2/sclidar --ros-args -r __node:=sclidar_scan_publisher --params-file /home/ubuntu/speech_patch/lidar_sclidar.yaml -r /scan:=scan_raw'",
+     "/scan_raw", 1, 5),
     # Filtre lidar Hiwonder (/scan_raw -> /scan). Vu figé le 11/11 (32 % CPU, plus
     # rien sur /scan) : le gardien bloquait alors tous les déplacements. Lancé au
     # boot par lidar.launch.py ; ici on le relance seulement s'il disparaît ou se tait.
