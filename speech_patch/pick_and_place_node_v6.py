@@ -52,7 +52,23 @@ PX_Y_PAR_M = 2600.0    # mesuré le 15/11 : ~26 px de y par cm d'avance
 VITESSE_FINE = 0.03    # m/s pour les pas < 2 cm : à 0,08 m/s le robot dépassait de ~1 cm
 TOL_OSCILLATION_PX = 26  # après 3 changements de sens, on accepte à ±1 cm
 STEP_FORWARD_M = 0.04  # pas d'avance par itération
-MAX_ITER = 60
+MAX_ITER = 90          # 60 avant le suivi du poignet (déplacements de poignet en plus)
+# Suivi du cube par le poignet (moteur 4) pendant l'approche — 16/11.
+# Avec la position de regard choisie le 16/11, le cube doit finir en bas de l'image
+# (y=356 sur ~400) : de loin il est hors champ en haut, ou sort en bas au moindre écart.
+# Le poignet relève la caméra pour garder le cube dans l'image ; la distance est alors
+# estimée en « y équivalent position de regard » : y - K x (poignet - regard),
+# K (px par unité de poignet, signé) étant mesuré en début d'approche.
+# Le réglage final et la décision « en position » se font TOUJOURS poignet revenu
+# à la position de regard : le réglage (teach) reste valable.
+SERVO_POIGNET = 4
+POIGNET_ECART_MAX = 200   # écart max au poignet de regard (unités moteur)
+POIGNET_PAS_MAX = 100     # déplacement max par correction
+POIGNET_SONDE = 25        # petit déplacement pour mesurer K
+Y_HAUT = 80               # cube trop haut dans l'image -> on relève la caméra
+Y_BAS = 330               # cube trop bas (poignet relevé) -> on la rabaisse
+Y_SUIVI = 220             # hauteur visée dans l'image pendant le suivi
+RETOUR_PX = 50            # y équivalent à moins de 50 px (~2 cm) du but -> poignet en regard
 MAX_LOST = 3           # itérations consécutives sans cube avant abandon
 TURN_DEADZONE = 0.02   # rad
 
@@ -360,6 +376,58 @@ class PickAndPlaceV6(Node):
         if wait:
             time.sleep(duration + 0.3)
 
+    # ─── poignet (suivi caméra) ───
+
+    def _poignet_borne(self, w):
+        w_r = self._poignet_regard
+        w = max(w_r - POIGNET_ECART_MAX, min(w_r + POIGNET_ECART_MAX, w))
+        k = self._k_poignet
+        # Une fois le sens connu : jamais plus « baissé » que la position de regard
+        if k and (w - w_r) * k < 0:
+            w = w_r
+        return int(max(0, min(1000, round(w))))
+
+    def _poignet_vers(self, w):
+        """Renvoie False si le poignet est déjà en butée (rien n'a bougé)."""
+        w = self._poignet_borne(w)
+        if w == self._poignet:
+            return False
+        duree = 0.2 + abs(w - self._poignet) / 400.0
+        self._move_servos({SERVO_POIGNET: w}, duree)
+        self._poignet = w
+        time.sleep(COLOR_SETTLE_S)
+        return True
+
+    def _mesurer_k(self, y0):
+        """K = variation de y (px) par unité de poignet. 0.0 si mesure impossible."""
+        w0 = self._poignet
+        for d in (POIGNET_SONDE, -POIGNET_SONDE):
+            self._poignet_vers(w0 + d)
+            m = self._mesure_stable()
+            if m is not None and abs(m[1] - y0) >= 6:
+                k = (m[1] - y0) / float(self._poignet - w0)
+                if 0.2 <= abs(k) <= 8.0:
+                    self.get_logger().info(
+                        f'  Poignet : K={k:+.2f} px/unité (y {y0:.0f} -> {m[1]:.0f})')
+                    return k
+            self._poignet_vers(w0)
+        self.get_logger().warn('  Poignet : K non mesurable, suivi désactivé')
+        return 0.0
+
+    def _chercher_en_inclinant(self):
+        """Cube invisible en position de regard : on incline le poignet pour le trouver."""
+        w_r = self._poignet_regard
+        for d in (60, -60, 120, -120, 180, -180):
+            if self._abort:
+                return None
+            self._poignet_vers(w_r + d)
+            cube = self._get_red_cube(timeout=1.0)
+            if cube is not None:
+                self.get_logger().info(f'  Cube trouvé poignet={self._poignet}')
+                return cube
+        self._poignet_vers(w_r)
+        return None
+
     # ─── séquence ───
 
     def _mesure_stable(self, n=3):
@@ -399,7 +467,9 @@ class PickAndPlaceV6(Node):
             # > 0 : cube trop loin, il faut avancer
             return (target_y - y) if par_y else (target_size - taille)
 
+        w_r = self._poignet_regard
         lost = 0
+        dernier_y = None
         sens_prec, inversions = 0, 0
         for i in range(MAX_ITER):
             if self._abort:
@@ -410,15 +480,58 @@ class PickAndPlaceV6(Node):
                 if lost >= MAX_LOST:
                     self.get_logger().warn('⚠️ Cube perdu')
                     return False
+                # Poignet suivi actif : on va chercher le cube du côté où il est sorti
+                k = self._k_poignet
+                if par_y and k and dernier_y is not None:
+                    if dernier_y < 200:
+                        self._poignet_vers(self._poignet + math.copysign(40, k))
+                    else:
+                        self._poignet_vers(self._poignet - math.copysign(40, k))
                 continue
             lost = 0
 
             x, y, size = cube.x, cube.y, (cube.width + cube.height) / 2.0
+            dernier_y = y
+
+            # ── Suivi par le poignet (seulement en mode y) ──
+            if par_y:
+                dw = self._poignet - w_r
+                if self._k_poignet is None and (y < Y_HAUT or dw != 0):
+                    self._k_poignet = self._mesurer_k(y)
+                    continue
+                k = self._k_poignet
+                if not k and dw != 0:
+                    self._poignet_vers(w_r)     # pas de suivi possible : regard fixe
+                    continue
+                if k:
+                    y_eq = y - k * dw
+                    if y < Y_HAUT:
+                        pas = max(-POIGNET_PAS_MAX, min(POIGNET_PAS_MAX, (Y_SUIVI - y) / k))
+                        self.get_logger().info(
+                            f'  [{i+1}] y={y:.0f} -> caméra relevée (poignet {self._poignet} {pas:+.0f})')
+                        if self._poignet_vers(self._poignet + pas):
+                            continue
+                    if dw != 0 and (y > Y_BAS or y_eq >= target_y - RETOUR_PX):
+                        if y_eq >= target_y - RETOUR_PX:
+                            cible = w_r
+                        else:
+                            pas = max(-POIGNET_PAS_MAX, min(POIGNET_PAS_MAX, (Y_SUIVI - y) / k))
+                            cible = self._poignet + pas
+                        self.get_logger().info(
+                            f'  [{i+1}] y={y:.0f} (équiv. {y_eq:.0f}) -> caméra rabaissée '
+                            f'(poignet -> {self._poignet_borne(cible)}, regard {w_r})')
+                        if self._poignet_vers(cible):
+                            continue
+                    y = y_eq          # distance estimée comme en position de regard
+                    dw = self._poignet - w_r
+            else:
+                dw = 0
+
             err_x = x - target_x
             err_d = erreur_distance(y, size)
 
-            # Près du but : on confirme sur la médiane de 3 images avant de décider
-            if abs(err_x) <= 2 * tol_x and abs(err_d) <= 2 * tol_d:
+            # Près du but (poignet en regard) : médiane de 3 images avant de décider
+            if dw == 0 and abs(err_x) <= 2 * tol_x and abs(err_d) <= 2 * tol_d:
                 m = self._mesure_stable()
                 if m is not None:
                     x, y, size = m
@@ -510,6 +623,9 @@ class PickAndPlaceV6(Node):
             regard[10] = int(calib.get(pick_calib.KEY_GRIPPER_OPEN, pick_calib.DEFAULT_GRIPPER_OPEN))
             self.get_logger().info(f'Bras en position de regard : {regard}')
             self._move_servos(regard, 1.5)
+            self._poignet_regard = int(regard.get(SERVO_POIGNET, 500))
+            self._poignet = self._poignet_regard
+            self._k_poignet = None      # mesuré pendant l'approche si besoin
             if self._abort:
                 self._resultat = ('annule', 'arrêt')
                 return
@@ -517,6 +633,8 @@ class PickAndPlaceV6(Node):
 
             self._say("Je cherche le cube rouge.")
             cube = self._get_red_cube(timeout=DETECT_TIMEOUT)
+            if cube is None and pick_calib.KEY_TARGET_Y in calib:
+                cube = self._chercher_en_inclinant()
             if cube is None:
                 self._say("Je ne vois pas de cube rouge. Place-le devant moi.")
                 self._resultat = ('echec', 'pas de cube rouge en vue')
