@@ -22,6 +22,12 @@ Dernière mise à jour : 10/11/2026 — étape 0 terminée. **Étape 1 terminée
 | G11 redémarrage (15/11) | routeur + gardien + exécuteurs lancés seuls, fichiers = GitHub. **Lidar muet au boot** : `/dev/lidar` (ttyCH341USB2) créé ~3 min APRÈS le lancement du programme du lidar → moteur qui tourne, aucune mesure, gardien bloque tout. Relancé (`maj_lidar.sh`) → `/scan_raw` 10 Hz ; watchdog relance désormais `sclidar_scan_publisher` si `/scan_raw` se tait. À vérifier au prochain démarrage |
 
 
+## Saisie : réglages et survol (15/11)
+
+- Distance d'approche guidée par la **hauteur du cube dans l'image (y)** au lieu de sa taille (taille trompeuse : 57 px à la position visée contre 68 au réglage ; ~26 px de y par cm). Fin d'approche régulière à ±4 mm. Avance à l'aveugle : élan ~+1,9 cm (13,9 cm parcourus pour 12 demandés). Essais : 15 cm → dépasse 3 cm ; 12 cm → 1/3, pince un peu devant ; **13 cm en cours d'essai**.
+- **Survol testé (`essai_survol.py`)** : bras épaule 270, coude 350, poignet 150 (limite de prudence) → pince ~5 cm au-dessus du cube, cube vu net dans toutes les images, à **x≈339, y≈352, ~90 px**. Le survol avec ajustement de près (crabe + petits pas) puis descente verticale est donc faisable → à construire en début d'étape 3. Attention : cube près du bas de l'image (352/400).
+- Les ordres envoyés juste après une relance d'un programme se perdent (liaison ROS pas encore établie, ~1–2 s) → à faire : renvoyer l'ordre une fois si pas d'accusé de réception.
+
 ## Étape 2 — ce qui change
 
 - `routeur_ordres.py` + `routeur_logique.py` : seul programme qui comprend les phrases (`/vocal_detect/asr_result`). Grammaire fixe, sinon IA locale (Ollama, JSON contrôlé, « Je lance ? » avant de bouger). Envoie un ordre à la fois sur `/robot/ordre`, attend `/robot/ordre/fin`.
