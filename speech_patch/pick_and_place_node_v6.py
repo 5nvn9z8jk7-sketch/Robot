@@ -46,7 +46,9 @@ TARGET_COLOR = 'red'
 CMD_VEL_RATE = 0.05
 DETECT_TIMEOUT = 5.0
 TOL_X_PX = 8           # tolérance centrage (pixels) — 15 avant le 15/11
-TOL_SIZE_PX = 4        # tolérance taille (pixels) — 8 avant le 15/11
+TOL_SIZE_PX = 4        # tolérance taille (pixels) — repli si le réglage n'a pas de y
+TOL_Y_PX = 6           # tolérance hauteur du cube dans l'image (pixels) — guide la distance
+PX_Y_PAR_M = 2500.0    # prudent : 25 px de y par cm (pas petits, convergence en quelques pas)
 STEP_FORWARD_M = 0.04  # pas d'avance par itération
 MAX_ITER = 60
 MAX_LOST = 3           # itérations consécutives sans cube avant abandon
@@ -359,27 +361,38 @@ class PickAndPlaceV6(Node):
     # ─── séquence ───
 
     def _mesure_stable(self, n=3):
-        """Médiane de n détections successives (x, taille) : le bruit de la
-        détection (±3 px mesurés le 15/11) faisait valider trop tôt ou trop tard."""
-        xs, tailles = [], []
+        """Médiane de n détections successives (x, y, taille)."""
+        xs, ys, tailles = [], [], []
         for _ in range(n):
             c = self._get_red_cube(timeout=1.0)
             if c is not None:
-                xs.append(c.x)
+                xs.append(c.x); ys.append(c.y)
                 tailles.append((c.width + c.height) / 2.0)
         if len(xs) < 2:
             return None
-        xs.sort(); tailles.sort()
-        return xs[len(xs) // 2], tailles[len(tailles) // 2]
+        med = lambda v: sorted(v)[len(v) // 2]
+        return med(xs), med(ys), med(tailles)
 
     def _position_and_grip(self, calib):
+        """Place le robot pour que le cube soit à la position de référence du réglage.
+
+        Distance : guidée par la HAUTEUR du cube dans l'image (y), et non plus par sa
+        taille. La caméra regarde le sol en plongée : y suit la distance au sol de près,
+        alors que la taille dépend de l'orientation du cube (vu de biais = plus gros).
+        Vu le 15/11 : arrêts « à la bonne taille » avec y = 26, 48 ou 90 pour 99 visé,
+        pince tombée ~1,5 cm avant le cube 2 fois sur 3."""
         target_x = float(calib[pick_calib.KEY_TARGET_X])
         target_size = float(calib[pick_calib.KEY_TARGET_SIZE])
+        target_y = calib.get(pick_calib.KEY_TARGET_Y)
+        par_y = target_y is not None
+        target_y = float(target_y) if par_y else 0.0
         noise = max(1.0, float(calib.get(pick_calib.KEY_NOISE, 1.0)))
-        # Tolérances resserrées le 15/11 (avant : 15 px et 8 px, gonflées par le bruit) :
-        # 1 essai réussi sur 3, arrêts acceptés entre 62 et 72 px pour 68 visés (±2 cm).
         tol_x = max(TOL_X_PX, noise * 2)
-        tol_size = max(TOL_SIZE_PX, noise * 1.5)
+        tol_d = max(TOL_Y_PX, noise * 2) if par_y else max(TOL_SIZE_PX, noise * 1.5)
+
+        def erreur_distance(y, taille):
+            # > 0 : cube trop loin, il faut avancer
+            return (target_y - y) if par_y else (target_size - taille)
 
         lost = 0
         for i in range(MAX_ITER):
@@ -394,40 +407,40 @@ class PickAndPlaceV6(Node):
                 continue
             lost = 0
 
-            size = (cube.width + cube.height) / 2.0
-            err_x = cube.x - target_x
-            err_size = target_size - size   # >0 : trop loin, il faut avancer
+            x, y, size = cube.x, cube.y, (cube.width + cube.height) / 2.0
+            err_x = x - target_x
+            err_d = erreur_distance(y, size)
 
             # Près du but : on confirme sur la médiane de 3 images avant de décider
-            if abs(err_x) <= 2 * tol_x and abs(err_size) <= 2 * tol_size:
+            if abs(err_x) <= 2 * tol_x and abs(err_d) <= 2 * tol_d:
                 m = self._mesure_stable()
                 if m is not None:
-                    err_x, err_size = m[0] - target_x, target_size - m[1]
-                    size = m[1]
-                if abs(err_x) <= tol_x and abs(err_size) <= tol_size:
+                    x, y, size = m
+                    err_x, err_d = x - target_x, erreur_distance(y, size)
+                if abs(err_x) <= tol_x and abs(err_d) <= tol_d:
                     self.get_logger().info(
-                        f'  [{i+1}] ✅ En position (x={target_x + err_x:.0f}, taille={size:.0f}px, '
-                        f'visé {target_x:.0f} / {target_size:.0f}px)')
+                        f'  [{i+1}] ✅ En position (x={x:.0f}, y={y:.0f}, taille={size:.0f}px ; '
+                        f'visé x={target_x:.0f}, y={target_y:.0f}, taille={target_size:.0f})')
                     return True
 
             # 1. Centrage prioritaire
             if abs(err_x) > tol_x:
                 self.get_logger().info(
-                    f'  [{i+1}] err=({err_x:+.0f}px, {err_size:+.0f}px) -> centrage')
+                    f'  [{i+1}] x={x:.0f} y={y:.0f} taille={size:.0f} -> centrage')
                 self._turn_to(math.atan2(err_x, DEFAULT_FX))
                 continue
 
-            # 2. Distance : petits pas près du but, et recul si trop près
-            #    (avant : il avançait toujours d'au moins 2 cm, même trop près)
-            if err_size > 0:
-                step = max(0.01, min(STEP_FORWARD_M, err_size / 350.0))
+            # 2. Distance : pas proportionnel à l'écart, petit près du but ; recul si trop près
+            gain = PX_Y_PAR_M if par_y else 350.0
+            step = min(STEP_FORWARD_M, max(0.005, abs(err_d) / gain))
+            if err_d > 0:
                 self.get_logger().info(
-                    f'  [{i+1}] err=({err_x:+.0f}px, {err_size:+.0f}px) -> avance {step*100:.0f} cm')
+                    f'  [{i+1}] x={x:.0f} y={y:.0f} taille={size:.0f} -> avance {step*100:.1f} cm')
                 self._drive(-step)
             else:
-                step = max(0.01, min(0.03, -err_size / 350.0))
+                step = min(step, 0.03)
                 self.get_logger().info(
-                    f'  [{i+1}] err=({err_x:+.0f}px, {err_size:+.0f}px) -> recule {step*100:.0f} cm')
+                    f'  [{i+1}] x={x:.0f} y={y:.0f} taille={size:.0f} -> recule {step*100:.1f} cm')
                 self._drive(step)
 
         self.get_logger().warn('⏱️ Positionnement: max iterations')
