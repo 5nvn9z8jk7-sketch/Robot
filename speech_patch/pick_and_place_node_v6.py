@@ -389,7 +389,10 @@ class PickAndPlaceV6(Node):
         par_y = target_y is not None
         target_y = float(target_y) if par_y else 0.0
         noise = max(1.0, float(calib.get(pick_calib.KEY_NOISE, 1.0)))
-        tol_x = max(TOL_X_PX, noise * 2)
+        # Jamais plus fin que la plus petite rotation possible (TURN_DEADZONE ≈ 8,5 px) :
+        # vu le 16/11, cube à 8 px du centre -> « centrage » demandé 60 fois mais rotation
+        # trop petite donc ignorée -> robot bloqué puis « je n'ai pas réussi à me placer ».
+        tol_x = max(TOL_X_PX, noise * 2, DEFAULT_FX * math.tan(TURN_DEADZONE) + 1.0)
         tol_d = max(TOL_Y_PX, noise * 2) if par_y else max(TOL_SIZE_PX, noise * 1.5)
 
         def erreur_distance(y, taille):
