@@ -68,6 +68,16 @@ POIGNET_SONDE = 25        # petit déplacement pour mesurer K
 Y_HAUT = 80               # cube trop haut dans l'image -> on relève la caméra
 Y_BAS = 330               # cube trop bas (poignet relevé) -> on la rabaisse
 Y_SUIVI = 220             # hauteur visée dans l'image pendant le suivi
+# Survol (16/11) : après l'approche en regard, bras en pose de survol (caméra
+# au-dessus du point de prise) ; on amène le cube à sa place apprise dans l'image
+# par petits pas (avant/arrière + crabe), gains appris en roulant. Plus d'avance à
+# l'aveugle : c'était la cause des écarts aléatoires (±1 à 3 cm).
+SURVOL_TOL_PX = 10
+SURVOL_PAS_MAX = 0.02      # m par correction
+SURVOL_VITESSE = 0.03      # m/s
+SURVOL_GAIN_INIT = 3000.0  # px/m, corrigé après chaque pas
+SURVOL_ITER = 40
+SURVOL_RECHERCHE_PAS = 0.02
 RETOUR_PX = 50            # y équivalent à moins de 50 px (~2 cm) du but -> poignet en regard
 MAX_LOST = 3           # itérations consécutives sans cube avant abandon
 TURN_DEADZONE = 0.02   # rad
@@ -428,6 +438,113 @@ class PickAndPlaceV6(Node):
         self._poignet_vers(w_r)
         return None
 
+    def _deplacer(self, avant_m, gauche_m, vitesse=SURVOL_VITESSE):
+        """Petit déplacement (avant OU crabe gauche), boucle odométrie.
+        Retourne la distance réellement parcourue, signée (m)."""
+        en_avant = abs(avant_m) >= abs(gauche_m)
+        dist = avant_m if en_avant else gauche_m
+        if abs(dist) < 0.004:
+            return 0.0
+        with self._lock:
+            x0, y0 = self._odom_x, self._odom_y
+        t = Twist()
+        if en_avant:
+            t.linear.x = math.copysign(vitesse, avant_m)     # linear.x > 0 = avance
+        else:
+            t.linear.y = math.copysign(vitesse, gauche_m)    # linear.y > 0 = gauche
+        nominal = abs(dist) / vitesse
+        start = time.time()
+        while time.time() - start < 3.0 * nominal + 2.0 and not self._abort:
+            if not self._odom_alive() and time.time() - start >= nominal:
+                break
+            with self._lock:
+                fait = math.hypot(self._odom_x - x0, self._odom_y - y0)
+            if fait >= abs(dist):
+                break
+            self.cmd_vel_pub.publish(t)
+            time.sleep(CMD_VEL_RATE)
+        self._stop()
+        time.sleep(0.3)
+        with self._lock:
+            fait = math.hypot(self._odom_x - x0, self._odom_y - y0)
+        if not self._odom_alive():
+            fait = abs(dist)
+        return math.copysign(fait, dist)
+
+    def _phase_survol(self, calib):
+        """Bras en survol ; cube amené à (survol_x, survol_y) ; True = pince au-dessus."""
+        pose = {int(k): v for k, v in calib[pick_calib.KEY_SURVOL].items()}
+        pose[10] = int(calib.get(pick_calib.KEY_GRIPPER_OPEN, pick_calib.DEFAULT_GRIPPER_OPEN))
+        sx = float(calib[pick_calib.KEY_SURVOL_X])
+        sy = float(calib[pick_calib.KEY_SURVOL_Y])
+        tol = max(SURVOL_TOL_PX, 2 * float(calib.get(pick_calib.KEY_SURVOL_NOISE, 1.0)))
+        self.get_logger().info(f'Survol : bras {pose}, cube visé x={sx:.0f} y={sy:.0f}')
+        self._move_servos(pose, 1.5)
+        time.sleep(COLOR_SETTLE_S + 0.3)
+
+        # Cube pas encore sous la caméra : on avance doucement en le cherchant
+        m = self._mesure_stable()
+        avance, avance_max = 0.0, float(calib.get(pick_calib.KEY_EXTRA, 0.10)) + 0.05
+        while m is None and avance < avance_max and not self._abort:
+            avance += abs(self._deplacer(SURVOL_RECHERCHE_PAS, 0.0))
+            m = self._mesure_stable()
+            self.get_logger().info(f'  survol : recherche, {avance*100:.0f} cm avancés, '
+                                   f'{"vu" if m else "pas vu"}')
+        if m is None:
+            self.get_logger().warn('⚠️ Cube invisible en survol')
+            return False
+
+        g_av, g_ga = SURVOL_GAIN_INIT, SURVOL_GAIN_INIT   # px de y par m avancé ; px de x par m à gauche
+        perdu, inversions, sens_prec = 0, 0, {}
+        for i in range(SURVOL_ITER):
+            if self._abort:
+                return False
+            if m is None:
+                m = self._mesure_stable()
+            if m is None:
+                perdu += 1
+                if perdu >= MAX_LOST:
+                    self.get_logger().warn('⚠️ Cube perdu en survol')
+                    return False
+                continue
+            perdu = 0
+            x, y, _ = m
+            ex, ey = x - sx, y - sy
+            tol_eff = tol * (2 if inversions >= 4 else 1)
+            if abs(ex) <= tol_eff and abs(ey) <= tol_eff:
+                self.get_logger().info(f'  [S{i+1}] ✅ Au-dessus du cube (x={x:.0f}, y={y:.0f})')
+                return True
+            # l'axe le plus en erreur d'abord
+            if abs(ey) >= abs(ex) and abs(ey) > tol_eff:
+                axe, gain, err = 'av', g_av, ey
+            else:
+                axe, gain, err = 'ga', g_ga, ex
+            pas = max(-SURVOL_PAS_MAX, min(SURVOL_PAS_MAX, -err / gain))
+            if abs(pas) < 0.005:
+                pas = math.copysign(0.005, pas)
+            sens = 1 if pas > 0 else -1
+            if sens_prec.get(axe) and sens_prec[axe] != sens:
+                inversions += 1
+            sens_prec[axe] = sens
+            self.get_logger().info(
+                f'  [S{i+1}] x={x:.0f} y={y:.0f} -> {"avance" if axe == "av" else "crabe gauche"} '
+                f'{pas*100:+.1f} cm (gain {gain:.0f})')
+            fait = self._deplacer(pas, 0.0) if axe == 'av' else self._deplacer(0.0, pas)
+            m2 = self._mesure_stable()
+            # Gain appris : variation de pixels / déplacement réel
+            if m2 is not None and abs(fait) >= 0.004:
+                d = (m2[1] - y) if axe == 'av' else (m2[0] - x)
+                if abs(d) >= 6:
+                    g = d / fait
+                    if 800 <= abs(g) <= 20000:
+                        if axe == 'av':
+                            g_av = g
+                        else:
+                            g_ga = g
+            m = m2
+        self.get_logger().warn('⏱️ Survol : max itérations')
+        return False
+
     # ─── séquence ───
 
     def _mesure_stable(self, n=3):
@@ -651,13 +768,22 @@ class PickAndPlaceV6(Node):
                     self._resultat = ('echec', 'placement impossible')
                 return
 
-            # Avance a l'aveugle: reference -> point de grip (le point de grip
-            # est sous le champ de la camera, voir pick_calib.py)
-            extra = float(calib.get(pick_calib.KEY_EXTRA, 0.0))
+            if pick_calib.KEY_SURVOL in calib:
+                if not self._phase_survol(calib):
+                    if self._abort:
+                        self._say("Arrêt.")
+                    else:
+                        self._say("Je n'ai pas reussi a me placer.")
+                        self._resultat = ('echec', 'survol impossible')
+                    return
+                extra = 0.0
+            else:
+                # Ancien mode : avance à l'aveugle référence -> point de prise
+                extra = float(calib.get(pick_calib.KEY_EXTRA, 0.0))
             if extra > 0.005:
                 self.get_logger().info(
                     f'Avance finale a l\'aveugle: {extra*100:.1f}cm (reference -> grip)')
-                self._drive(-extra)
+                self._drive(-extra, linear_speed=VITESSE_FINE)
             if self._abort:
                 self._say("Arrêt.")
                 return

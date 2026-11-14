@@ -7,6 +7,8 @@ soit au sol, ouverte, autour du cube. Le script memorise les positions
 servo, remonte le bras, puis mesure pendant 3 s ce que la camera voit
 quand le cube est exactement au point de grip. Resultat -> pick_calib.json.
 
+Option --survol : apprend la pose « caméra au-dessus du cube » (voir main_survol).
+
 Commandes pendant le reglage:
   2 +20 / 2 -20   servo 2 (epaule): monte/descend tout le bras
   3 +10 / 3 -10   servo 3 (coude): avance/recule la pince
@@ -120,11 +122,120 @@ def parse_adjust(cmd):
     return servo, delta
 
 
+def regler(node, positions, gripper_open, gripper_close, montrer_cube=False):
+    """Boucle de réglage au clavier. True = ok, False = abandon (q)."""
+    while True:
+        try:
+            cmd = input('> ').strip()
+        except EOFError:
+            cmd = 'q'
+        if not cmd:
+            continue
+        if cmd == 'q':
+            return False
+        if cmd == 'ok':
+            return True
+        if cmd == 'f':
+            node.move_servos({10: gripper_close}, 0.8)
+            print('Pince fermee. Tapez o pour rouvrir.')
+            continue
+        if cmd == 'o':
+            node.move_servos({10: gripper_open}, 0.8)
+            print('Pince ouverte.')
+            continue
+        if cmd == 'v' and montrer_cube:
+            montrer(node)
+            continue
+        adj = parse_adjust(cmd)
+        if adj is None:
+            print('Commande invalide. Exemples: 2 +20, 3 -10, 4 +10, f, o, ok, q'
+                  + (', v' if montrer_cube else ''))
+            continue
+        servo, delta = adj
+        positions[servo] = max(0, min(1000, positions[servo] + delta))
+        node.move_servos({servo: positions[servo]}, 0.4)
+        print(f'Servo {servo} = {positions[servo]}')
+        if montrer_cube:
+            montrer(node)
+
+
+def montrer(node):
+    ok, n, st = collect_measurements(node, seconds=1.0, min_samples=3)
+    if ok:
+        print(f"  cube vu : x={st['x']:.0f} y={st['y']:.0f} taille={st['size']:.0f} px "
+              f"(image 640x400, centre 320,200)")
+    else:
+        print('  cube NON vu')
+
+
+def main_survol(node):
+    """--survol : apprend la pose « caméra au-dessus du cube » SANS bouger le robot.
+    1) pince au sol autour du cube (point de prise) ; 2) le bras monte en survol et on
+    règle 2/3/4 pour que la caméra voie bien le cube ; 3) mesure. La saisie amènera
+    ensuite le cube à cette place dans l'image : la pince est alors au-dessus du cube,
+    il n'y a plus d'avance à l'aveugle."""
+    calib = pick_calib.load_calib()
+    if not calib:
+        print('ERREUR : pas de calibration existante. Rien n\'est modifié.')
+        return
+    positions = {int(k): v for k, v in calib[pick_calib.KEY_SERVO].items()}
+    gripper_open = int(calib.get(pick_calib.KEY_GRIPPER_OPEN, pick_calib.DEFAULT_GRIPPER_OPEN))
+    gripper_close = min(pick_calib.GRIPPER_MAX, int(calib.get(
+        pick_calib.KEY_GRIPPER_CLOSE, pick_calib.DEFAULT_GRIPPER_CLOSE)))
+    survol = {int(k): v for k, v in calib.get(pick_calib.KEY_SURVOL,
+                                               pick_calib.DEFAULT_SURVOL).items()}
+    print('=' * 60)
+    print('REGLAGE DU SURVOL - le robot ne roule pas')
+    print('=' * 60)
+    try:
+        input('Entrée = descendre la pince ouverte au sol... ')
+    except EOFError:
+        print('Pas de terminal interactif. Lancez avec: ssh -t robot')
+        return
+    d = dict(positions); d[10] = gripper_open
+    node.move_servos(d, 1.5)
+    print()
+    print('ETAPE 1 : posez le cube ENTRE LES DOIGTS (là où la pince doit le prendre).')
+    print('Si besoin réglez : 2 +20 | 2 -20 | 3 +10 | 3 -10 | 4 +10 | 4 -10 ; f/o = tester.')
+    print('Tapez ok quand le cube est bien placé (pince ouverte).')
+    if not regler(node, positions, gripper_open, gripper_close):
+        print('Abandon, rien n\'a été sauvegardé.')
+        return
+    node.move_servos({10: gripper_open}, 0.6)
+    print()
+    print('ETAPE 2 : NE TOUCHEZ PLUS AU CUBE. Le bras monte en survol.')
+    s = dict(survol); s[10] = gripper_open
+    node.move_servos(s, 2.0)
+    montrer(node)
+    print('Réglez 2/3/4 pour que la caméra voie bien le cube, idéalement près du')
+    print('centre de l\'image (y entre 150 et 300). v = revoir le cube ; ok = mesurer.')
+    if not regler(node, survol, gripper_open, gripper_close, montrer_cube=True):
+        print('Abandon, rien n\'a été sauvegardé.')
+        return
+    ok, n, st = collect_with_retry(node)
+    if not ok:
+        print(f'ECHEC : cube vu seulement {n} fois. Rien n\'est modifié.')
+        return
+    path = pick_calib.save_survol(survol, st['x'], st['y'], st['noise'], positions)
+    print()
+    print(f"Survol : x={st['x']:.0f} y={st['y']:.0f} taille={st['size']:.0f} "
+          f"(bruit +-{st['noise']:.1f} px)")
+    print(f'Pose de survol : {survol}')
+    print(f'Sauvegardé dans {path}')
+
+
 def main():
     rclpy.init()
     node = TeachPickV6()
     spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
     spin_thread.start()
+
+    if '--survol' in sys.argv:
+        try:
+            main_survol(node)
+        finally:
+            rclpy.shutdown()
+        return
 
     # --regard-actuel : la position où se trouve le bras MAINTENANT devient la
     # position de recherche (« regard ») ; la référence y est mesurée et la

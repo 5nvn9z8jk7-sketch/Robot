@@ -48,6 +48,28 @@ KEY_EXTRA = 'extra_forward_m'
 KEY_NOISE = 'noise_px'
 KEY_SAMPLES = 'measured_samples'
 KEY_CREATED = 'created'
+# Survol (16/11) : pose du bras « caméra au-dessus du cube » et position du cube dans
+# l'image quand la pince est EXACTEMENT au point de prise (mesurée sans bouger le robot).
+KEY_SURVOL = 'survol_pose'
+KEY_SURVOL_X = 'survol_x'
+KEY_SURVOL_Y = 'survol_y'
+KEY_SURVOL_NOISE = 'survol_noise_px'
+DEFAULT_SURVOL = {1: 500, 2: 270, 3: 350, 4: 150, 5: 500}   # essai_survol du 16/11
+
+
+def save_survol(pose, x, y, noise_px, servo_positions, path=CALIB_PATH):
+    """Ajoute le survol à la calibration existante (le reste est conservé)."""
+    with open(path) as f:
+        data = json.load(f)
+    data[KEY_SURVOL] = {str(k): int(v) for k, v in pose.items() if int(k) != 10}
+    data[KEY_SURVOL_X] = float(x)
+    data[KEY_SURVOL_Y] = float(y)
+    data[KEY_SURVOL_NOISE] = float(noise_px)
+    data[KEY_SERVO] = {str(k): int(v) for k, v in servo_positions.items()}
+    data[KEY_CREATED] = time.strftime('%Y-%m-%d %H:%M:%S')
+    with open(path, 'w') as f:
+        json.dump(data, f, indent=2)
+    return path
 
 
 def save_calib(target_x, target_y, target_size, extra_forward_m, noise_px, samples,
