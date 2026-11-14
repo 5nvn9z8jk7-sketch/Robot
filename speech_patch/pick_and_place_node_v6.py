@@ -47,8 +47,10 @@ CMD_VEL_RATE = 0.05
 DETECT_TIMEOUT = 5.0
 TOL_X_PX = 8           # tolérance centrage (pixels) — 15 avant le 15/11
 TOL_SIZE_PX = 4        # tolérance taille (pixels) — repli si le réglage n'a pas de y
-TOL_Y_PX = 6           # tolérance hauteur du cube dans l'image (pixels) — guide la distance
-PX_Y_PAR_M = 2500.0    # prudent : 25 px de y par cm (pas petits, convergence en quelques pas)
+TOL_Y_PX = 12          # tolérance hauteur du cube dans l'image (pixels) ≈ 5 mm
+PX_Y_PAR_M = 2600.0    # mesuré le 15/11 : ~26 px de y par cm d'avance
+VITESSE_FINE = 0.03    # m/s pour les pas < 2 cm : à 0,08 m/s le robot dépassait de ~1 cm
+TOL_OSCILLATION_PX = 26  # après 3 changements de sens, on accepte à ±1 cm
 STEP_FORWARD_M = 0.04  # pas d'avance par itération
 MAX_ITER = 60
 MAX_LOST = 3           # itérations consécutives sans cube avant abandon
@@ -395,6 +397,7 @@ class PickAndPlaceV6(Node):
             return (target_y - y) if par_y else (target_size - taille)
 
         lost = 0
+        sens_prec, inversions = 0, 0
         for i in range(MAX_ITER):
             if self._abort:
                 return False
@@ -417,7 +420,8 @@ class PickAndPlaceV6(Node):
                 if m is not None:
                     x, y, size = m
                     err_x, err_d = x - target_x, erreur_distance(y, size)
-                if abs(err_x) <= tol_x and abs(err_d) <= tol_d:
+                tol_d_eff = max(tol_d, TOL_OSCILLATION_PX) if (par_y and inversions >= 3) else tol_d
+                if abs(err_x) <= tol_x and abs(err_d) <= tol_d_eff:
                     self.get_logger().info(
                         f'  [{i+1}] ✅ En position (x={x:.0f}, y={y:.0f}, taille={size:.0f}px ; '
                         f'visé x={target_x:.0f}, y={target_y:.0f}, taille={target_size:.0f})')
@@ -433,15 +437,20 @@ class PickAndPlaceV6(Node):
             # 2. Distance : pas proportionnel à l'écart, petit près du but ; recul si trop près
             gain = PX_Y_PAR_M if par_y else 350.0
             step = min(STEP_FORWARD_M, max(0.005, abs(err_d) / gain))
+            vitesse = VITESSE_FINE if step < 0.02 else 0.08
+            sens = 1 if err_d > 0 else -1
+            if sens_prec and sens != sens_prec:
+                inversions += 1
+            sens_prec = sens
             if err_d > 0:
                 self.get_logger().info(
                     f'  [{i+1}] x={x:.0f} y={y:.0f} taille={size:.0f} -> avance {step*100:.1f} cm')
-                self._drive(-step)
+                self._drive(-step, linear_speed=vitesse)
             else:
                 step = min(step, 0.03)
                 self.get_logger().info(
                     f'  [{i+1}] x={x:.0f} y={y:.0f} taille={size:.0f} -> recule {step*100:.1f} cm')
-                self._drive(step)
+                self._drive(step, linear_speed=vitesse)
 
         self.get_logger().warn('⏱️ Positionnement: max iterations')
         return False

@@ -9,7 +9,7 @@ URL=https://raw.githubusercontent.com/5nvn9z8jk7-sketch/Robot/etape-2-routeur/sp
 TS=$(date +%Y%m%d_%H%M%S)
 curl -fsSL "$URL/$F?t=$TS" -o /tmp/pick_new.py
 python3 -m py_compile /tmp/pick_new.py
-grep -q PX_Y_PAR_M /tmp/pick_new.py || { echo "ERREUR: version inattendue, rien n'est remplacé"; exit 1; }
+grep -q VITESSE_FINE /tmp/pick_new.py || { echo "ERREUR: version inattendue, rien n'est remplacé"; exit 1; }
 mkdir -p "$D/sauvegardes"
 cp "$D/$F" "$D/sauvegardes/$F.$TS"
 cp /tmp/pick_new.py "$D/$F"
