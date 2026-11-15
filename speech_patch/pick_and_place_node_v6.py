@@ -73,10 +73,11 @@ Y_SUIVI = 220             # hauteur visée dans l'image pendant le suivi
 # par petits pas (avant/arrière + crabe), gains appris en roulant. Plus d'avance à
 # l'aveugle : c'était la cause des écarts aléatoires (±1 à 3 cm).
 SURVOL_TOL_PX = 10
-SURVOL_PAS_MAX = 0.02      # m par correction
+SURVOL_PAS_MAX = 0.02      # m par correction (avant/arrière)
+SURVOL_PAS_MAX_CRABE = 0.008  # crabe : 16/11, pas de 1,3-1,9 cm -> allers-retours
 SURVOL_VITESSE = 0.03      # m/s
 SURVOL_GAIN_INIT = 3000.0  # px/m, corrigé après chaque pas
-SURVOL_ITER = 40
+SURVOL_ITER = 50
 SURVOL_RECHERCHE_PAS = 0.02
 RETOUR_PX = 50            # y équivalent à moins de 50 px (~2 cm) du but -> poignet en regard
 MAX_LOST = 3           # itérations consécutives sans cube avant abandon
@@ -520,7 +521,7 @@ class PickAndPlaceV6(Node):
             x, y, _ = m
             dernier = (x, y)
             ex, ey = x - sx, y - sy
-            tol_eff = tol * (2 if inversions >= 4 else 1)
+            tol_eff = tol * (1.5 if inversions >= 6 else 1)   # 16/11 : x2 dès 4 -> accepté à 20 px
             if abs(ex) <= tol_eff and abs(ey) <= tol_eff:
                 self.get_logger().info(f'  [S{i+1}] ✅ Au-dessus du cube (x={x:.0f}, y={y:.0f})')
                 return True
@@ -529,7 +530,8 @@ class PickAndPlaceV6(Node):
                 axe, gain, err = 'av', g_av, ey
             else:
                 axe, gain, err = 'ga', g_ga, ex
-            pas = max(-SURVOL_PAS_MAX, min(SURVOL_PAS_MAX, -err / gain))
+            pmax = SURVOL_PAS_MAX if axe == 'av' else SURVOL_PAS_MAX_CRABE
+            pas = max(-pmax, min(pmax, -err / gain))
             if abs(pas) < 0.005:
                 pas = math.copysign(0.005, pas)
             sens = 1 if pas > 0 else -1
@@ -547,10 +549,12 @@ class PickAndPlaceV6(Node):
                 if abs(d) >= 6:
                     g = d / fait
                     if 800 <= abs(g) <= 20000:
+                        # moyenne avec l'ancien gain (même sens) : une mesure bruitée
+                        # ne fait plus doubler le pas suivant
                         if axe == 'av':
-                            g_av = g
+                            g_av = g if g * g_av < 0 else 0.5 * (g + g_av)
                         else:
-                            g_ga = g
+                            g_ga = g if g * g_ga < 0 else 0.5 * (g + g_ga)
             m = m2
         self.get_logger().warn('⏱️ Survol : max itérations')
         return False
