@@ -14,11 +14,14 @@ Séquence:
   3. Préhension: descend le bras aux positions servos apprises, ferme la
      pince à gripper_close, remonte le bras.
 
-Déclencheurs: /vocal_detect/asr_result (voix ou touche P du keypad web).
+Déclencheur (étape 2) : /robot/ordre {"action": "attrape"} envoyé par routeur_ordres.py
+(voix, micro du PC, zone de texte ou touche P de la page). Fin : /robot/ordre/fin.
 Calibration: /home/ubuntu/speech_patch/pick_calib.json (rechargé à chaque run).
 """
 
+import json
 import math
+import os
 import sys
 import threading
 import time
@@ -43,10 +46,41 @@ DEFAULT_FX = 423.376
 TARGET_COLOR = 'red'
 CMD_VEL_RATE = 0.05
 DETECT_TIMEOUT = 5.0
-TOL_X_PX = 15          # tolérance centrage (pixels)
-TOL_SIZE_PX = 8        # tolérance taille (pixels)
+TOL_X_PX = 8           # tolérance centrage (pixels) — 15 avant le 15/11
+TOL_SIZE_PX = 4        # tolérance taille (pixels) — repli si le réglage n'a pas de y
+TOL_Y_PX = 12          # tolérance hauteur du cube dans l'image (pixels) ≈ 5 mm
+PX_Y_PAR_M = 2600.0    # mesuré le 15/11 : ~26 px de y par cm d'avance
+VITESSE_FINE = 0.03    # m/s pour les pas < 2 cm : à 0,08 m/s le robot dépassait de ~1 cm
+TOL_OSCILLATION_PX = 26  # après 3 changements de sens, on accepte à ±1 cm
 STEP_FORWARD_M = 0.04  # pas d'avance par itération
-MAX_ITER = 60
+MAX_ITER = 90          # 60 avant le suivi du poignet (déplacements de poignet en plus)
+# Suivi du cube par le poignet (moteur 4) pendant l'approche — 16/11.
+# Avec la position de regard choisie le 16/11, le cube doit finir en bas de l'image
+# (y=356 sur ~400) : de loin il est hors champ en haut, ou sort en bas au moindre écart.
+# Le poignet relève la caméra pour garder le cube dans l'image ; la distance est alors
+# estimée en « y équivalent position de regard » : y - K x (poignet - regard),
+# K (px par unité de poignet, signé) étant mesuré en début d'approche.
+# Le réglage final et la décision « en position » se font TOUJOURS poignet revenu
+# à la position de regard : le réglage (teach) reste valable.
+SERVO_POIGNET = 4
+POIGNET_ECART_MAX = 200   # écart max au poignet de regard (unités moteur)
+POIGNET_PAS_MAX = 100     # déplacement max par correction
+POIGNET_SONDE = 25        # petit déplacement pour mesurer K
+Y_HAUT = 80               # cube trop haut dans l'image -> on relève la caméra
+Y_BAS = 330               # cube trop bas (poignet relevé) -> on la rabaisse
+Y_SUIVI = 220             # hauteur visée dans l'image pendant le suivi
+# Survol (16/11) : après l'approche en regard, bras en pose de survol (caméra
+# au-dessus du point de prise) ; on amène le cube à sa place apprise dans l'image
+# par petits pas (avant/arrière + crabe), gains appris en roulant. Plus d'avance à
+# l'aveugle : c'était la cause des écarts aléatoires (±1 à 3 cm).
+SURVOL_TOL_PX = 10
+SURVOL_PAS_MAX = 0.02      # m par correction (avant/arrière)
+SURVOL_PAS_MAX_CRABE = 0.008  # crabe : 16/11, pas de 1,3-1,9 cm -> allers-retours
+SURVOL_VITESSE = 0.03      # m/s
+SURVOL_GAIN_INIT = 3000.0  # px/m, corrigé après chaque pas
+SURVOL_ITER = 50
+SURVOL_RECHERCHE_PAS = 0.02
+RETOUR_PX = 50            # y équivalent à moins de 50 px (~2 cm) du but -> poignet en regard
 MAX_LOST = 3           # itérations consécutives sans cube avant abandon
 TURN_DEADZONE = 0.02   # rad
 
@@ -89,8 +123,14 @@ class PickAndPlaceV6(Node):
         self.tts_pub = self.create_publisher(String, '/tts_node/tts_text', 1)
         self.servo_pub = self.create_publisher(ServosPosition, 'servo_controller', 1)
 
+        # Étape 2 : le déclenchement vient du routeur (/robot/ordre) ; les phrases
+        # restent écoutées uniquement pour l'arrêt (« stop »), en secours du gardien.
         self.create_subscription(
             String, '/vocal_detect/asr_result', self._asr_cb, 1)
+        self.create_subscription(String, '/robot/ordre', self._ordre_cb, 10)
+        self.pub_fin = self.create_publisher(String, '/robot/ordre/fin', 10)
+        self._ordre_id = None
+        self._resultat = ('echec', '')
         self.create_subscription(
             ColorsInfo, '/color_detect_node/color_info', self._color_cb, 1)
         self.create_subscription(
@@ -100,7 +140,14 @@ class PickAndPlaceV6(Node):
             QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
                             reliability=ReliabilityPolicy.RELIABLE))
 
+        # Réglage de la prise depuis l'interface (boutons ±0,5 cm) — 16/11
+        latch = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                           reliability=ReliabilityPolicy.RELIABLE)
+        self.pub_corr = self.create_publisher(String, '/robot/pick/correction_etat', latch)
+        self.create_subscription(String, '/robot/pick/correction', self._corr_cb, 10)
+
         calib = pick_calib.load_calib()
+        self._publier_corr(calib)
         if calib:
             self.get_logger().info(
                 f'✅ Calibration chargee: target=({calib[pick_calib.KEY_TARGET_X]:.0f},'
@@ -129,18 +176,95 @@ class PickAndPlaceV6(Node):
             if running:
                 self.get_logger().warn('🛑 ARRET D\'URGENCE demandé - séquence interrompue')
             return
-        if not self._is_trigger(text):
+        # (plus de déclenchement direct ici : voir _ordre_cb)
+
+    def _ordre_cb(self, msg):
+        """Ordre du routeur : {"id": "r3", "action": "attrape", "couleur": "rouge"}."""
+        try:
+            o = json.loads(msg.data)
+        except ValueError:
+            return
+        # Ordre renvoyé par le routeur (accusé de réception perdu) : déjà pris
+        if o.get('id') and o.get('id') == getattr(self, '_dernier_oid', None):
+            return
+        self._dernier_oid = o.get('id')
+        if o.get('action') == 'lache':
+            # dans un fil à part : ne pas bloquer les autres messages (arrêt…) 1 s
+            threading.Thread(target=self._lacher, args=(o.get('id'),), daemon=True).start()
+            return
+        if o.get('action') != 'attrape':
             return
         if self._verrou:
             self._say("Arrêt général actif. Dis reprends d'abord.")
+            self._publier_fin(o.get('id'), 'refus', 'arrêt général actif')
             return
         with self._lock:
             if self._busy:
                 self.get_logger().info('Deja en cours, ignore')
-                return
-            self._busy = True
-            self._abort = False
+                occupe = True
+            else:
+                occupe = False
+                self._busy = True
+                self._abort = False
+                self._ordre_id = o.get('id')
+                self._resultat = ('echec', '')
+        if occupe:
+            self._publier_fin(o.get('id'), 'refus', 'saisie déjà en cours')
+            return
+        self._publier_fin(o.get('id'), 'recu')
         threading.Thread(target=self._run_sequence, daemon=True).start()
+
+    def _publier_corr(self, calib):
+        cm = 100.0 * float((calib or {}).get('survol_extra_m', 0.0))
+        self.pub_corr.publish(String(data=json.dumps({'cm': round(cm, 1)})))
+
+    def _corr_cb(self, msg):
+        """{"delta_cm": 0.5} : + = le robot avance d'autant avant de descendre la pince."""
+        try:
+            delta = float(json.loads(msg.data).get('delta_cm', 0.0))
+        except (ValueError, AttributeError, TypeError):
+            return
+        with self._lock:
+            if self._busy:
+                self._say("Réglage impossible pendant une saisie.")
+                return
+        try:
+            with open(pick_calib.CALIB_PATH) as f:
+                data = json.load(f)
+            cm = 100.0 * float(data.get('survol_extra_m', 0.0)) + delta
+            cm = max(-5.0, min(5.0, round(cm * 2) / 2.0))   # pas de 0,5 cm, ±5 cm
+            data['survol_extra_m'] = round(cm / 100.0, 4)
+            tmp = pick_calib.CALIB_PATH + '.tmp'
+            with open(tmp, 'w') as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp, pick_calib.CALIB_PATH)
+        except (OSError, ValueError) as e:
+            self.get_logger().error(f'Réglage de la prise impossible : {e}')
+            return
+        self.get_logger().info(f'Réglage de la prise : {cm:+.1f} cm')
+        self._publier_corr(data)
+        signe = 'plus ' if cm > 0 else ('moins ' if cm < 0 else '')
+        self._say(f"Réglage {signe}{abs(cm):.1f} centimètre".replace('.', ','))
+
+    def _lacher(self, oid):
+        """« Lâche le cube » : ouvre la pince sur place (le bras ne bouge pas)."""
+        with self._lock:
+            occupe = self._busy
+        if occupe:
+            self._publier_fin(oid, 'refus', 'saisie en cours')
+            return
+        self._publier_fin(oid, 'recu')
+        calib = pick_calib.load_calib() or {}
+        ouvert = int(calib.get(pick_calib.KEY_GRIPPER_OPEN, pick_calib.DEFAULT_GRIPPER_OPEN))
+        self._say("J'ouvre la pince.")
+        self._move_servos({10: ouvert}, 0.8)
+        self._publier_fin(oid, 'ok')
+
+    def _publier_fin(self, oid, resultat, detail=''):
+        if oid is None:
+            return
+        self.pub_fin.publish(String(data=json.dumps(
+            {'id': oid, 'resultat': resultat, 'detail': detail}, ensure_ascii=False)))
 
     def _estop_cb(self, msg):
         """Arrêt général du gardien (ESPACE, bouton, « stop ») : interrompt la séquence."""
@@ -214,6 +338,11 @@ class PickAndPlaceV6(Node):
                 continue
             if info and len(info.data) > 0:
                 reds = [c for c in info.data if c.color == TARGET_COLOR]
+                # 16/11 : un gros objet rouge (150-270 px) était suivi à la place du
+                # cube (65 px). On ignore ce qui est bien trop gros pour être le cube.
+                tmax = getattr(self, '_taille_max', None)
+                if tmax:
+                    reds = [c for c in reds if (c.width + c.height) / 2.0 <= tmax]
                 for c in reds:
                     size = c.width * c.height
                     if size > best_size:
@@ -307,16 +436,223 @@ class PickAndPlaceV6(Node):
         if wait:
             time.sleep(duration + 0.3)
 
+    # ─── poignet (suivi caméra) ───
+
+    def _poignet_borne(self, w):
+        w_r = self._poignet_regard
+        w = max(w_r - POIGNET_ECART_MAX, min(w_r + POIGNET_ECART_MAX, w))
+        k = self._k_poignet
+        # Une fois le sens connu : jamais plus « baissé » que la position de regard
+        if k and (w - w_r) * k < 0:
+            w = w_r
+        return int(max(0, min(1000, round(w))))
+
+    def _poignet_vers(self, w):
+        """Renvoie False si le poignet est déjà en butée (rien n'a bougé)."""
+        w = self._poignet_borne(w)
+        if w == self._poignet:
+            return False
+        duree = 0.2 + abs(w - self._poignet) / 400.0
+        self._move_servos({SERVO_POIGNET: w}, duree)
+        self._poignet = w
+        time.sleep(COLOR_SETTLE_S)
+        return True
+
+    def _mesurer_k(self, y0):
+        """K = variation de y (px) par unité de poignet. 0.0 si mesure impossible."""
+        w0 = self._poignet
+        for d in (POIGNET_SONDE, -POIGNET_SONDE):
+            self._poignet_vers(w0 + d)
+            m = self._mesure_stable()
+            if m is not None and abs(m[1] - y0) >= 6:
+                k = (m[1] - y0) / float(self._poignet - w0)
+                if 0.2 <= abs(k) <= 8.0:
+                    self.get_logger().info(
+                        f'  Poignet : K={k:+.2f} px/unité (y {y0:.0f} -> {m[1]:.0f})')
+                    return k
+            self._poignet_vers(w0)
+        self.get_logger().warn('  Poignet : K non mesurable, suivi désactivé')
+        return 0.0
+
+    def _chercher_en_inclinant(self):
+        """Cube invisible en position de regard : on incline le poignet pour le trouver."""
+        w_r = self._poignet_regard
+        for d in (60, -60, 120, -120, 180, -180):
+            if self._abort:
+                return None
+            self._poignet_vers(w_r + d)
+            cube = self._get_red_cube(timeout=1.0)
+            if cube is not None:
+                self.get_logger().info(f'  Cube trouvé poignet={self._poignet}')
+                return cube
+        self._poignet_vers(w_r)
+        return None
+
+    def _deplacer(self, avant_m, gauche_m, vitesse=SURVOL_VITESSE):
+        """Petit déplacement (avant OU crabe gauche), boucle odométrie.
+        Retourne la distance réellement parcourue, signée (m)."""
+        en_avant = abs(avant_m) >= abs(gauche_m)
+        dist = avant_m if en_avant else gauche_m
+        if abs(dist) < 0.004:
+            return 0.0
+        with self._lock:
+            x0, y0 = self._odom_x, self._odom_y
+        t = Twist()
+        if en_avant:
+            t.linear.x = math.copysign(vitesse, avant_m)     # linear.x > 0 = avance
+        else:
+            t.linear.y = math.copysign(vitesse, gauche_m)    # linear.y > 0 = gauche
+        nominal = abs(dist) / vitesse
+        start = time.time()
+        while time.time() - start < 3.0 * nominal + 2.0 and not self._abort:
+            if not self._odom_alive() and time.time() - start >= nominal:
+                break
+            with self._lock:
+                fait = math.hypot(self._odom_x - x0, self._odom_y - y0)
+            if fait >= abs(dist):
+                break
+            self.cmd_vel_pub.publish(t)
+            time.sleep(CMD_VEL_RATE)
+        self._stop()
+        time.sleep(0.3)
+        with self._lock:
+            fait = math.hypot(self._odom_x - x0, self._odom_y - y0)
+        if not self._odom_alive():
+            fait = abs(dist)
+        return math.copysign(fait, dist)
+
+    def _phase_survol(self, calib):
+        """Bras en survol ; cube amené à (survol_x, survol_y) ; True = pince au-dessus."""
+        pose = {int(k): v for k, v in calib[pick_calib.KEY_SURVOL].items()}
+        pose[10] = int(calib.get(pick_calib.KEY_GRIPPER_OPEN, pick_calib.DEFAULT_GRIPPER_OPEN))
+        sx = float(calib[pick_calib.KEY_SURVOL_X])
+        sy = float(calib[pick_calib.KEY_SURVOL_Y])
+        tol = max(SURVOL_TOL_PX, 2 * float(calib.get(pick_calib.KEY_SURVOL_NOISE, 1.0)))
+        self.get_logger().info(f'Survol : bras {pose}, cube visé x={sx:.0f} y={sy:.0f}')
+        self._move_servos(pose, 1.5)
+        time.sleep(COLOR_SETTLE_S + 0.3)
+        # En survol la caméra est plus près : cube ~83 px au point de prise
+        self._taille_max = 220.0
+
+        # Cube pas encore sous la caméra : on avance doucement en le cherchant
+        m = self._mesure_stable()
+        avance, avance_max = 0.0, float(calib.get(pick_calib.KEY_EXTRA, 0.10)) + 0.05
+        while m is None and avance < avance_max and not self._abort:
+            avance += abs(self._deplacer(SURVOL_RECHERCHE_PAS, 0.0))
+            m = self._mesure_stable()
+            self.get_logger().info(f'  survol : recherche, {avance*100:.0f} cm avancés, '
+                                   f'{"vu" if m else "pas vu"}')
+        if m is None:
+            self.get_logger().warn('⚠️ Cube invisible en survol')
+            return False
+
+        g_av, g_ga = SURVOL_GAIN_INIT, SURVOL_GAIN_INIT   # px de y par m avancé ; px de x par m à gauche
+        perdu, inversions, sens_prec = 0, 0, {}
+        dernier = None
+        for i in range(SURVOL_ITER):
+            if self._abort:
+                return False
+            if m is None:
+                m = self._mesure_stable()
+            if m is None:
+                perdu += 1
+                if perdu >= MAX_LOST:
+                    self.get_logger().warn('⚠️ Cube perdu en survol')
+                    return False
+                # Sorti par un bord (cible y=361 sur 400 : peu de marge) -> 1 cm en arrière
+                if dernier is not None:
+                    dx, dy = dernier[0] - sx, dernier[1] - sy
+                    if abs(dy) >= abs(dx):
+                        self._deplacer(-math.copysign(0.01, dy * g_av), 0.0)
+                    else:
+                        self._deplacer(0.0, -math.copysign(0.01, dx * g_ga))
+                    self.get_logger().info('  survol : cube sorti de l\'image, retour 1 cm')
+                continue
+            perdu = 0
+            x, y, _ = m
+            dernier = (x, y)
+            ex, ey = x - sx, y - sy
+            tol_eff = tol * (1.5 if inversions >= 6 else 1)   # 16/11 : x2 dès 4 -> accepté à 20 px
+            if abs(ex) <= tol_eff and abs(ey) <= tol_eff:
+                self.get_logger().info(f'  [S{i+1}] ✅ Au-dessus du cube (x={x:.0f}, y={y:.0f})')
+                return True
+            # l'axe le plus en erreur d'abord
+            if abs(ey) >= abs(ex) and abs(ey) > tol_eff:
+                axe, gain, err = 'av', g_av, ey
+            else:
+                axe, gain, err = 'ga', g_ga, ex
+            pmax = SURVOL_PAS_MAX if axe == 'av' else SURVOL_PAS_MAX_CRABE
+            pas = max(-pmax, min(pmax, -err / gain))
+            if abs(pas) < 0.005:
+                pas = math.copysign(0.005, pas)
+            sens = 1 if pas > 0 else -1
+            if sens_prec.get(axe) and sens_prec[axe] != sens:
+                inversions += 1
+            sens_prec[axe] = sens
+            self.get_logger().info(
+                f'  [S{i+1}] x={x:.0f} y={y:.0f} -> {"avance" if axe == "av" else "crabe gauche"} '
+                f'{pas*100:+.1f} cm (gain {gain:.0f})')
+            fait = self._deplacer(pas, 0.0) if axe == 'av' else self._deplacer(0.0, pas)
+            m2 = self._mesure_stable()
+            # Gain appris : variation de pixels / déplacement réel
+            if m2 is not None and abs(fait) >= 0.004:
+                d = (m2[1] - y) if axe == 'av' else (m2[0] - x)
+                if abs(d) >= 6:
+                    g = d / fait
+                    if 800 <= abs(g) <= 20000:
+                        # moyenne avec l'ancien gain (même sens) : une mesure bruitée
+                        # ne fait plus doubler le pas suivant
+                        if axe == 'av':
+                            g_av = g if g * g_av < 0 else 0.5 * (g + g_av)
+                        else:
+                            g_ga = g if g * g_ga < 0 else 0.5 * (g + g_ga)
+            m = m2
+        self.get_logger().warn('⏱️ Survol : max itérations')
+        return False
+
     # ─── séquence ───
 
+    def _mesure_stable(self, n=3):
+        """Médiane de n détections successives (x, y, taille)."""
+        xs, ys, tailles = [], [], []
+        for _ in range(n):
+            c = self._get_red_cube(timeout=1.0)
+            if c is not None:
+                xs.append(c.x); ys.append(c.y)
+                tailles.append((c.width + c.height) / 2.0)
+        if len(xs) < 2:
+            return None
+        med = lambda v: sorted(v)[len(v) // 2]
+        return med(xs), med(ys), med(tailles)
+
     def _position_and_grip(self, calib):
+        """Place le robot pour que le cube soit à la position de référence du réglage.
+
+        Distance : guidée par la HAUTEUR du cube dans l'image (y), et non plus par sa
+        taille. La caméra regarde le sol en plongée : y suit la distance au sol de près,
+        alors que la taille dépend de l'orientation du cube (vu de biais = plus gros).
+        Vu le 15/11 : arrêts « à la bonne taille » avec y = 26, 48 ou 90 pour 99 visé,
+        pince tombée ~1,5 cm avant le cube 2 fois sur 3."""
         target_x = float(calib[pick_calib.KEY_TARGET_X])
         target_size = float(calib[pick_calib.KEY_TARGET_SIZE])
-        noise = max(2.0, float(calib.get(pick_calib.KEY_NOISE, 2.0)))
-        tol_x = max(TOL_X_PX, noise * 4)
-        tol_size = max(TOL_SIZE_PX, noise * 3)
+        target_y = calib.get(pick_calib.KEY_TARGET_Y)
+        par_y = target_y is not None
+        target_y = float(target_y) if par_y else 0.0
+        noise = max(1.0, float(calib.get(pick_calib.KEY_NOISE, 1.0)))
+        # Jamais plus fin que la plus petite rotation possible (TURN_DEADZONE ≈ 8,5 px) :
+        # vu le 16/11, cube à 8 px du centre -> « centrage » demandé 60 fois mais rotation
+        # trop petite donc ignorée -> robot bloqué puis « je n'ai pas réussi à me placer ».
+        tol_x = max(TOL_X_PX, noise * 2, DEFAULT_FX * math.tan(TURN_DEADZONE) + 1.0)
+        tol_d = max(TOL_Y_PX, noise * 2) if par_y else max(TOL_SIZE_PX, noise * 1.5)
 
+        def erreur_distance(y, taille):
+            # > 0 : cube trop loin, il faut avancer
+            return (target_y - y) if par_y else (target_size - taille)
+
+        w_r = self._poignet_regard
         lost = 0
+        dernier_y = None
+        sens_prec, inversions = 0, 0
         for i in range(MAX_ITER):
             if self._abort:
                 return False
@@ -326,30 +662,93 @@ class PickAndPlaceV6(Node):
                 if lost >= MAX_LOST:
                     self.get_logger().warn('⚠️ Cube perdu')
                     return False
+                # Poignet suivi actif : on va chercher le cube du côté où il est sorti
+                k = self._k_poignet
+                if par_y and k and dernier_y is not None:
+                    if dernier_y < 200:
+                        self._poignet_vers(self._poignet + math.copysign(40, k))
+                    else:
+                        self._poignet_vers(self._poignet - math.copysign(40, k))
                 continue
             lost = 0
 
-            size = (cube.width + cube.height) / 2.0
-            err_x = cube.x - target_x
-            err_size = target_size - size   # >0 : trop loin, il faut avancer
+            x, y, size = cube.x, cube.y, (cube.width + cube.height) / 2.0
+            dernier_y = y
 
-            if abs(err_x) <= tol_x and abs(err_size) <= tol_size:
-                self.get_logger().info(
-                    f'  [{i+1}] ✅ En position (x={cube.x}, taille={size:.0f}px)')
-                return True
+            # ── Suivi par le poignet (seulement en mode y) ──
+            if par_y:
+                dw = self._poignet - w_r
+                if self._k_poignet is None and (y < Y_HAUT or dw != 0):
+                    self._k_poignet = self._mesurer_k(y)
+                    continue
+                k = self._k_poignet
+                if not k and dw != 0:
+                    self._poignet_vers(w_r)     # pas de suivi possible : regard fixe
+                    continue
+                if k:
+                    y_eq = y - k * dw
+                    if y < Y_HAUT:
+                        pas = max(-POIGNET_PAS_MAX, min(POIGNET_PAS_MAX, (Y_SUIVI - y) / k))
+                        self.get_logger().info(
+                            f'  [{i+1}] y={y:.0f} -> caméra relevée (poignet {self._poignet} {pas:+.0f})')
+                        if self._poignet_vers(self._poignet + pas):
+                            continue
+                    if dw != 0 and (y > Y_BAS or y_eq >= target_y - RETOUR_PX):
+                        if y_eq >= target_y - RETOUR_PX:
+                            cible = w_r
+                        else:
+                            pas = max(-POIGNET_PAS_MAX, min(POIGNET_PAS_MAX, (Y_SUIVI - y) / k))
+                            cible = self._poignet + pas
+                        self.get_logger().info(
+                            f'  [{i+1}] y={y:.0f} (équiv. {y_eq:.0f}) -> caméra rabaissée '
+                            f'(poignet -> {self._poignet_borne(cible)}, regard {w_r})')
+                        if self._poignet_vers(cible):
+                            continue
+                    y = y_eq          # distance estimée comme en position de regard
+                    dw = self._poignet - w_r
+            else:
+                dw = 0
+
+            err_x = x - target_x
+            err_d = erreur_distance(y, size)
+
+            # Près du but (poignet en regard) : médiane de 3 images avant de décider
+            if dw == 0 and abs(err_x) <= 2 * tol_x and abs(err_d) <= 2 * tol_d:
+                m = self._mesure_stable()
+                if m is not None:
+                    x, y, size = m
+                    err_x, err_d = x - target_x, erreur_distance(y, size)
+                tol_d_eff = max(tol_d, TOL_OSCILLATION_PX) if (par_y and inversions >= 3) else tol_d
+                if abs(err_x) <= tol_x and abs(err_d) <= tol_d_eff:
+                    self.get_logger().info(
+                        f'  [{i+1}] ✅ En position (x={x:.0f}, y={y:.0f}, taille={size:.0f}px ; '
+                        f'visé x={target_x:.0f}, y={target_y:.0f}, taille={target_size:.0f})')
+                    return True
 
             # 1. Centrage prioritaire
             if abs(err_x) > tol_x:
                 self.get_logger().info(
-                    f'  [{i+1}] err=({err_x:+.0f}px, {err_size:+.0f}px) -> centrage')
-                self._turn_to(math.atan2(cube.x - target_x, DEFAULT_FX))
+                    f'  [{i+1}] x={x:.0f} y={y:.0f} taille={size:.0f} -> centrage')
+                self._turn_to(math.atan2(err_x, DEFAULT_FX))
                 continue
 
-            # 2. Approche
-            self.get_logger().info(
-                f'  [{i+1}] err=({err_x:+.0f}px, {err_size:+.0f}px) -> avance')
-            step = max(0.02, min(STEP_FORWARD_M, err_size / 300.0))
-            self._drive(-step)
+            # 2. Distance : pas proportionnel à l'écart, petit près du but ; recul si trop près
+            gain = PX_Y_PAR_M if par_y else 350.0
+            step = min(STEP_FORWARD_M, max(0.005, abs(err_d) / gain))
+            vitesse = VITESSE_FINE if step < 0.02 else 0.08
+            sens = 1 if err_d > 0 else -1
+            if sens_prec and sens != sens_prec:
+                inversions += 1
+            sens_prec = sens
+            if err_d > 0:
+                self.get_logger().info(
+                    f'  [{i+1}] x={x:.0f} y={y:.0f} taille={size:.0f} -> avance {step*100:.1f} cm')
+                self._drive(-step, linear_speed=vitesse)
+            else:
+                step = min(step, 0.03)
+                self.get_logger().info(
+                    f'  [{i+1}] x={x:.0f} y={y:.0f} taille={size:.0f} -> recule {step*100:.1f} cm')
+                self._drive(step, linear_speed=vitesse)
 
         self.get_logger().warn('⏱️ Positionnement: max iterations')
         return False
@@ -397,10 +796,32 @@ class PickAndPlaceV6(Node):
                 }
                 self.get_logger().warn('Calibration absente: valeurs de secours (imprecis)')
 
+            # La caméra est au poignet : ce qu'elle voit dépend de la position du bras.
+            # La référence (taille 60 px…) a été mesurée bras HAUT, pince OUVERTE
+            # (teach_pick_v6.py). On y remet le bras avant de chercher : avant, si le bras
+            # avait été bougé au clavier, le cube sortait de l'image en approche (vu le 12/11).
+            regard = {int(k): v for k, v in calib.get(pick_calib.KEY_ARM_UP,
+                                                       pick_calib.DEFAULT_UP).items()}
+            regard[10] = int(calib.get(pick_calib.KEY_GRIPPER_OPEN, pick_calib.DEFAULT_GRIPPER_OPEN))
+            self.get_logger().info(f'Bras en position de regard : {regard}')
+            self._move_servos(regard, 1.5)
+            self._poignet_regard = int(regard.get(SERVO_POIGNET, 500))
+            self._poignet = self._poignet_regard
+            self._k_poignet = None      # mesuré pendant l'approche si besoin
+            # Cube vu à 65 px à la référence ; plus près il grossit un peu (pas x2)
+            self._taille_max = 1.8 * float(calib.get(pick_calib.KEY_TARGET_SIZE, 90.0))
+            if self._abort:
+                self._resultat = ('annule', 'arrêt')
+                return
+            time.sleep(COLOR_SETTLE_S + 0.3)   # images prises pendant le mouvement ignorées
+
             self._say("Je cherche le cube rouge.")
             cube = self._get_red_cube(timeout=DETECT_TIMEOUT)
+            if cube is None and pick_calib.KEY_TARGET_Y in calib:
+                cube = self._chercher_en_inclinant()
             if cube is None:
                 self._say("Je ne vois pas de cube rouge. Place-le devant moi.")
+                self._resultat = ('echec', 'pas de cube rouge en vue')
                 return
             self.get_logger().info(
                 f'Cube: ({cube.x},{cube.y}) {cube.width}x{cube.height}px')
@@ -411,15 +832,30 @@ class PickAndPlaceV6(Node):
                     self._say("Arrêt.")
                 else:
                     self._say("Je n'ai pas reussi a me placer.")
+                    self._resultat = ('echec', 'placement impossible')
                 return
 
-            # Avance a l'aveugle: reference -> point de grip (le point de grip
-            # est sous le champ de la camera, voir pick_calib.py)
-            extra = float(calib.get(pick_calib.KEY_EXTRA, 0.0))
+            if pick_calib.KEY_SURVOL in calib:
+                if not self._phase_survol(calib):
+                    if self._abort:
+                        self._say("Arrêt.")
+                    else:
+                        self._say("Je n'ai pas reussi a me placer.")
+                        self._resultat = ('echec', 'survol impossible')
+                    return
+                # Petite correction finale réglable (16/11 : pince 1 cm avant le cube)
+                corr = float(calib.get('survol_extra_m', 0.0))
+                if abs(corr) >= 0.004:
+                    self.get_logger().info(f'Survol : correction finale {corr*100:+.1f} cm')
+                    self._deplacer(corr, 0.0)
+                extra = 0.0
+            else:
+                # Ancien mode : avance à l'aveugle référence -> point de prise
+                extra = float(calib.get(pick_calib.KEY_EXTRA, 0.0))
             if extra > 0.005:
                 self.get_logger().info(
                     f'Avance finale a l\'aveugle: {extra*100:.1f}cm (reference -> grip)')
-                self._drive(-extra)
+                self._drive(-extra, linear_speed=VITESSE_FINE)
             if self._abort:
                 self._say("Arrêt.")
                 return
@@ -430,6 +866,7 @@ class PickAndPlaceV6(Node):
                 return
             self._say("Voilà, c'est fait !")
             self.get_logger().info('✅ Séquence terminée')
+            self._resultat = ('ok', '')
         except Exception as e:
             self.get_logger().error(f'Erreur: {e}')
             import traceback
@@ -438,8 +875,14 @@ class PickAndPlaceV6(Node):
         finally:
             self._stop()
             with self._lock:
+                annule = self._abort
+                oid, self._ordre_id = self._ordre_id, None
+                res, detail = self._resultat
                 self._busy = False
                 self._abort = False
+            if annule and res != 'ok':
+                res, detail = 'annule', 'arrêt'
+            self._publier_fin(oid, res, detail)
 
 
 def main(args=None):

@@ -14,7 +14,8 @@ Nœuds surveillés:
   - ws_audio_asr          (ASR vocal)
   - tts_node              (TTS vocal)
   - agent_process         (LLM)
-  - llm_move_bridge       (pont mouvement Ollama)
+  - routeur_ordres        (compréhension des phrases, étape 2)
+  - llm_move_bridge       (exécuteur des déplacements)
   - autonomous_mission_node (missions autonomes)
   - simple_color_detect   (détection couleur)
   - servo_manager         (bras robotique — nœud réel, ex-servo_controller)
@@ -46,6 +47,23 @@ NODES_CONFIG = [
     ("gardien_securite",
      "python3 -u /home/ubuntu/speech_patch/gardien_securite.py",
      None, 1, 2),
+    # Programme du lidar (/scan_raw). Vu le 15/11 : lancé au boot AVANT que le port
+    # /dev/lidar n'existe (créé 3 min plus tard) -> moteur qui tourne, aucune mesure,
+    # et le gardien bloque tous les déplacements. Relancé ici si /scan_raw se tait.
+    ("sclidar_scan_publisher",
+     "bash -c 'source /home/ubuntu/third_party/third_party_ws/install/setup.bash; exec /home/ubuntu/third_party/third_party_ws/install/sclidar_ros2/lib/sclidar_ros2/sclidar --ros-args -r __node:=sclidar_scan_publisher --params-file /home/ubuntu/speech_patch/lidar_sclidar.yaml -r /scan:=scan_raw'",
+     "/scan_raw", 1, 5),
+    # Filtre lidar Hiwonder (/scan_raw -> /scan). Vu figé le 11/11 (32 % CPU, plus
+    # rien sur /scan) : le gardien bloquait alors tous les déplacements. Lancé au
+    # boot par lidar.launch.py ; ici on le relance seulement s'il disparaît ou se tait.
+    ("scan_to_scan_filter_chain",
+     "/opt/ros/humble/lib/laser_filters/scan_to_scan_filter_chain --ros-args --params-file /home/ubuntu/ros2_ws/install/peripherals/share/peripherals/config/lidar_filters_config_sclidar.yaml -r scan:=scan_raw -r scan_filtered:=scan",
+     "/scan", 1, 3),
+    # Étape 2 : seule porte d'entrée des phrases (voix robot, micro PC, page).
+    # S'il tombe, plus aucun ordre n'est compris (panne « sûre »).
+    ("routeur_ordres",
+     "python3 -u /home/ubuntu/speech_patch/routeur_ordres.py",
+     None, 1, 3),
     ("rosbridge_websocket",
      "ros2 launch rosbridge_server rosbridge_websocket_launch.xml",
      None, 1, 5),  # Pas de topic spécifique, on teste le port

@@ -26,13 +26,20 @@ import numpy as np
 sys.path.insert(0, '/home/ubuntu/.local/lib/python3.10/site-packages')
 from speech.speech_offline_patch import OfflineRealTimeTTS
 tts = OfflineRealTimeTTS(language='fr')
+# Une phrase qui fait planter la synthèse (vu le 11/11 : erreur ScatterND
+# du modèle) ne doit pas empêcher de préparer les suivantes : 2 essais chacune.
 for texte, chemin in json.loads(sys.argv[1]):
-    a = tts._tts.generate(texte, sid=0, speed=1.0)
-    s = (np.array(a.samples, dtype=np.float32) * 32767).astype(np.int16)
-    w = wave.open(chemin + '.tmp', 'wb')
-    w.setnchannels(1); w.setsampwidth(2); w.setframerate(int(a.sample_rate))
-    w.writeframes(s.tobytes()); w.close()
-    os.replace(chemin + '.tmp', chemin)
+    for essai in (1, 2):
+        try:
+            a = tts._tts.generate(texte, sid=0, speed=1.0)
+            s = (np.array(a.samples, dtype=np.float32) * 32767).astype(np.int16)
+            w = wave.open(chemin + '.tmp', 'wb')
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(int(a.sample_rate))
+            w.writeframes(s.tobytes()); w.close()
+            os.replace(chemin + '.tmp', chemin)
+            break
+        except Exception as e:
+            print(f'echec ({essai}/2) : {texte!r} : {str(e)[:120]}', file=sys.stderr)
 """
 
 
@@ -59,8 +66,11 @@ class VoixRapide:
             r = subprocess.run(['python3', '-c', _SCRIPT, json.dumps(a_faire)],
                                capture_output=True, timeout=120)
             ok = sum(os.path.exists(c) for _, c in a_faire)
+            err = r.stderr.decode('utf-8', 'replace').strip().splitlines()
+            echecs = [l for l in err if l.startswith('echec')]
             self.journal(f'voix rapide : {ok}/{len(a_faire)} phrases préparées'
-                         + ('' if r.returncode == 0 else f' (erreur : {r.stderr[-200:]!r})'))
+                         + (f' ; {" | ".join(echecs)}' if echecs else '')
+                         + ('' if r.returncode == 0 else f' (erreur : {err[-1][:200] if err else "?"})'))
         except Exception as e:  # le repli TTS reste disponible
             self.journal(f'voix rapide : préparation impossible ({e})')
 
