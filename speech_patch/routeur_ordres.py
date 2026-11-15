@@ -43,6 +43,7 @@ OLLAMA_URL = 'http://192.168.1.20:11434'
 OLLAMA_MODELE = 'qwen3.5:9b'
 IA_DELAI_S = 40.0          # le 1er appel charge le modèle (plus long)
 CONFIRMATION_S = 20.0      # délai pour répondre « oui »
+ACCUSE_RENVOI_S = 1.5    # renvoi unique de l'ordre si pas d'accusé
 ACCUSE_S = 3.0           # l'exécuteur doit accuser réception en moins de 3 s
 DOUBLON_S = 1.5            # même phrase reçue deux fois (deux micros) : ignorée
 
@@ -287,7 +288,8 @@ class RouteurOrdres(Node):
             self._maj(etat=self._etat_courant())
 
     def _executer(self, o):
-        oid = f'r{next(self._ids)}'
+        # id unique même après une relance du routeur (les exécuteurs ignorent un id déjà vu)
+        oid = f'r{int(time.time()) % 100000}-{next(self._ids)}'
         ordre = dict(o, id=oid)
         with self._lock:
             self._fin.pop(oid, None)
@@ -295,6 +297,7 @@ class RouteurOrdres(Node):
         debut = time.monotonic()
         limite = debut + delai_max(o)
         recu = False
+        renvoye = False
         while time.monotonic() < limite:
             self._fin_evt.wait(0.2)
             self._fin_evt.clear()
@@ -307,6 +310,12 @@ class RouteurOrdres(Node):
                 return f
             if self._annuler:
                 return {'resultat': 'annule'}
+            # Pas d'accusé après 1,5 s : on renvoie une fois (ordres perdus juste après
+            # une relance d'exécuteur, vu le 11/11 et le 16/11)
+            if not recu and not renvoye and time.monotonic() - debut > ACCUSE_RENVOI_S:
+                renvoye = True
+                self.get_logger().warn(f'Pas d\'accusé pour {oid}, renvoi')
+                self.pub_ordre.publish(String(data=json.dumps(ordre, ensure_ascii=False)))
             # Exécuteur absent (relance en cours…) : on ne reste pas bloqué 2 min
             if not recu and time.monotonic() - debut > ACCUSE_S:
                 return {'resultat': 'echec', 'detail': f"le programme chargé de « {rl.decrire(o)} » ne répond pas"}

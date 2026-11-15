@@ -70,6 +70,10 @@ class ExecuteurDeplacements(Node):
             return
         if o.get('action') not in ('avance', 'recule', 'crabe', 'tourne'):
             return   # ordre destiné à un autre exécuteur
+        # Ordre renvoyé par le routeur (accusé de réception perdu) : déjà pris
+        if o.get('id') and o.get('id') == getattr(self, '_dernier_oid', None):
+            return
+        self._dernier_oid = o.get('id')
         if self._verrou:
             self._fin(o, 'refus', 'arrêt général actif')
             return

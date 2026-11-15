@@ -169,6 +169,10 @@ class AutonomousMissionNode(Node):
         commande = {'attrape_tout': 'attrape_tout', 'patrouille': 'patrouille'}.get(o.get('action'))
         if commande is None:
             return
+        # Ordre renvoyé par le routeur (accusé de réception perdu) : déjà pris
+        if o.get('id') and o.get('id') == getattr(self, '_dernier_oid', None):
+            return
+        self._dernier_oid = o.get('id')
         if self._verrou:
             self._say("Arrêt général actif. Dis reprends d'abord.")
             self._publier_fin(o.get('id'), 'refus', 'arrêt général actif')

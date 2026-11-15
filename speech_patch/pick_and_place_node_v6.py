@@ -176,6 +176,10 @@ class PickAndPlaceV6(Node):
             o = json.loads(msg.data)
         except ValueError:
             return
+        # Ordre renvoyé par le routeur (accusé de réception perdu) : déjà pris
+        if o.get('id') and o.get('id') == getattr(self, '_dernier_oid', None):
+            return
+        self._dernier_oid = o.get('id')
         if o.get('action') == 'lache':
             # dans un fil à part : ne pas bloquer les autres messages (arrêt…) 1 s
             threading.Thread(target=self._lacher, args=(o.get('id'),), daemon=True).start()
