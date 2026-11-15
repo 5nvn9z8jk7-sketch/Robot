@@ -21,6 +21,7 @@ Calibration: /home/ubuntu/speech_patch/pick_calib.json (rechargé à chaque run)
 
 import json
 import math
+import os
 import sys
 import threading
 import time
@@ -139,7 +140,14 @@ class PickAndPlaceV6(Node):
             QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
                             reliability=ReliabilityPolicy.RELIABLE))
 
+        # Réglage de la prise depuis l'interface (boutons ±0,5 cm) — 16/11
+        latch = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                           reliability=ReliabilityPolicy.RELIABLE)
+        self.pub_corr = self.create_publisher(String, '/robot/pick/correction_etat', latch)
+        self.create_subscription(String, '/robot/pick/correction', self._corr_cb, 10)
+
         calib = pick_calib.load_calib()
+        self._publier_corr(calib)
         if calib:
             self.get_logger().info(
                 f'✅ Calibration chargee: target=({calib[pick_calib.KEY_TARGET_X]:.0f},'
@@ -205,6 +213,38 @@ class PickAndPlaceV6(Node):
             return
         self._publier_fin(o.get('id'), 'recu')
         threading.Thread(target=self._run_sequence, daemon=True).start()
+
+    def _publier_corr(self, calib):
+        cm = 100.0 * float((calib or {}).get('survol_extra_m', 0.0))
+        self.pub_corr.publish(String(data=json.dumps({'cm': round(cm, 1)})))
+
+    def _corr_cb(self, msg):
+        """{"delta_cm": 0.5} : + = le robot avance d'autant avant de descendre la pince."""
+        try:
+            delta = float(json.loads(msg.data).get('delta_cm', 0.0))
+        except (ValueError, AttributeError, TypeError):
+            return
+        with self._lock:
+            if self._busy:
+                self._say("Réglage impossible pendant une saisie.")
+                return
+        try:
+            with open(pick_calib.CALIB_PATH) as f:
+                data = json.load(f)
+            cm = 100.0 * float(data.get('survol_extra_m', 0.0)) + delta
+            cm = max(-5.0, min(5.0, round(cm * 2) / 2.0))   # pas de 0,5 cm, ±5 cm
+            data['survol_extra_m'] = round(cm / 100.0, 4)
+            tmp = pick_calib.CALIB_PATH + '.tmp'
+            with open(tmp, 'w') as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp, pick_calib.CALIB_PATH)
+        except (OSError, ValueError) as e:
+            self.get_logger().error(f'Réglage de la prise impossible : {e}')
+            return
+        self.get_logger().info(f'Réglage de la prise : {cm:+.1f} cm')
+        self._publier_corr(data)
+        signe = 'plus ' if cm > 0 else ('moins ' if cm < 0 else '')
+        self._say(f"Réglage {signe}{abs(cm):.1f} centimètre".replace('.', ','))
 
     def _lacher(self, oid):
         """« Lâche le cube » : ouvre la pince sur place (le bras ne bouge pas)."""

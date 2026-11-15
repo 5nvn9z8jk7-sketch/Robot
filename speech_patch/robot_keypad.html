@@ -161,9 +161,12 @@
 </div>
 
 <div class="speed-control" style="margin-top:10px;">
-  <label>🤏 Distance cible (caméra depth): <span class="speed-value" id="pickDistVal">0.18</span> m</label>
-  <input type="range" id="pickDistSlider" min="0.10" max="0.40" step="0.01" value="0.18" oninput="updatePickDist()">
-  <div style="font-size:0.75em;color:#8b949e;margin-top:4px;">Distance caméra-cube pour la préhension (précision ±2cm avec depth)</div>
+  <label>🤏 Réglage de la prise : <span class="speed-value" id="corrVal">?</span> cm</label>
+  <div style="display:flex;gap:8px;margin-top:6px;">
+    <button class="key" style="flex:1;aspect-ratio:auto;padding:8px;" onclick="corrigerPince(-0.5)">− 0,5 cm<br><small>pince APRÈS le cube</small></button>
+    <button class="key" style="flex:1;aspect-ratio:auto;padding:8px;" onclick="corrigerPince(0.5)">+ 0,5 cm<br><small>pince AVANT le cube</small></button>
+  </div>
+  <div style="font-size:0.75em;color:#8b949e;margin-top:4px;">Avance (+) ou recul (−) du robot juste avant de descendre la pince. Pris en compte au prochain P.</div>
 </div>
 
 <div class="keypad">
@@ -405,6 +408,8 @@ function connectRobot() {
     // Étape 1 : nos commandes passent par le gardien de sécurité du robot
     ws.send(JSON.stringify({ op: 'advertise', topic: '/robot/cmd_vel/manuel', type: 'geometry_msgs/Twist' }));
     ws.send(JSON.stringify({ op: 'advertise', topic: '/robot/estop', type: 'std_msgs/Bool' }));
+    ws.send(JSON.stringify({ op: 'advertise', topic: '/robot/pick/correction', type: 'std_msgs/String' }));
+    subscribe('/robot/pick/correction_etat');
     subscribe('/robot/securite/etat');
     subscribe('/robot/routeur/etat');
     subscribe('/tts_node/tts_text');
@@ -423,6 +428,9 @@ function connectRobot() {
         }
         if (msg.topic === '/robot/routeur/etat') {
           majRouteur(msg.msg.data);
+        }
+        if (msg.topic === '/robot/pick/correction_etat') {
+          majCorrection(msg.msg.data);
         }
         if (msg.topic === '/robot/securite/etat') {
           majSecurite(msg.msg.data);
@@ -674,21 +682,19 @@ function updateSpeed() {
   document.getElementById('rotVal').textContent = rotSpeed.toFixed(1);
 }
 
-function updatePickDist() {
-  const val = parseFloat(document.getElementById('pickDistSlider').value);
-  document.getElementById('pickDistVal').textContent = val.toFixed(2);
-  document.getElementById('pickDistM').textContent = val.toFixed(2);
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({
-      op: 'call_service',
-      service: '/pick_and_place_node_v5/set_parameters',
-      args: { parameters: [
-        { name: 'gripper_reach', value: { type: 3, double_value: val } }
-      ] },
-      id: 'set_pick_dist'
-    }));
-    log('Distance cible (depth): ' + val.toFixed(2) + ' m', 'cmd');
-  }
+function corrigerPince(delta) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) { log('Robot non connecte', 'err'); return; }
+  ws.send(JSON.stringify({ op: 'publish', topic: '/robot/pick/correction',
+                           msg: { data: JSON.stringify({ delta_cm: delta }) } }));
+  log('Réglage de la prise : ' + (delta > 0 ? '+' : '') + delta + ' cm', 'cmd');
+}
+
+function majCorrection(json) {
+  try {
+    var e = JSON.parse(json);
+    document.getElementById('corrVal').textContent =
+      (e.cm > 0 ? '+' : '') + Number(e.cm).toFixed(1).replace('.', ',');
+  } catch (err) {}
 }
 
 // === ORDRES ÉCRITS OU DICTÉS (étape 2) ===
