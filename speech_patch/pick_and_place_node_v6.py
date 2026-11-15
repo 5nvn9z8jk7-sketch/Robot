@@ -294,6 +294,11 @@ class PickAndPlaceV6(Node):
                 continue
             if info and len(info.data) > 0:
                 reds = [c for c in info.data if c.color == TARGET_COLOR]
+                # 16/11 : un gros objet rouge (150-270 px) était suivi à la place du
+                # cube (65 px). On ignore ce qui est bien trop gros pour être le cube.
+                tmax = getattr(self, '_taille_max', None)
+                if tmax:
+                    reds = [c for c in reds if (c.width + c.height) / 2.0 <= tmax]
                 for c in reds:
                     size = c.width * c.height
                     if size > best_size:
@@ -482,6 +487,8 @@ class PickAndPlaceV6(Node):
         self.get_logger().info(f'Survol : bras {pose}, cube visé x={sx:.0f} y={sy:.0f}')
         self._move_servos(pose, 1.5)
         time.sleep(COLOR_SETTLE_S + 0.3)
+        # En survol la caméra est plus près : cube ~83 px au point de prise
+        self._taille_max = 220.0
 
         # Cube pas encore sous la caméra : on avance doucement en le cherchant
         m = self._mesure_stable()
@@ -757,6 +764,8 @@ class PickAndPlaceV6(Node):
             self._poignet_regard = int(regard.get(SERVO_POIGNET, 500))
             self._poignet = self._poignet_regard
             self._k_poignet = None      # mesuré pendant l'approche si besoin
+            # Cube vu à 65 px à la référence ; plus près il grossit un peu (pas x2)
+            self._taille_max = 1.8 * float(calib.get(pick_calib.KEY_TARGET_SIZE, 90.0))
             if self._abort:
                 self._resultat = ('annule', 'arrêt')
                 return
