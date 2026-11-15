@@ -786,6 +786,11 @@ class PickAndPlaceV6(Node):
                         self._say("Je n'ai pas reussi a me placer.")
                         self._resultat = ('echec', 'survol impossible')
                     return
+                # Petite correction finale réglable (16/11 : pince 1 cm avant le cube)
+                corr = float(calib.get('survol_extra_m', 0.0))
+                if abs(corr) >= 0.004:
+                    self.get_logger().info(f'Survol : correction finale {corr*100:+.1f} cm')
+                    self._deplacer(corr, 0.0)
                 extra = 0.0
             else:
                 # Ancien mode : avance à l'aveugle référence -> point de prise
